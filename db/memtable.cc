@@ -1040,6 +1040,37 @@ void MemTable::MultiGet(const ReadOptions& read_options, MultiGetRange* range,
   PERF_COUNTER_ADD(get_from_memtable_count, 1);
 }
 
+Status MemTable::UpdateIgnore(SequenceNumber seq, const Slice& key) {
+  LookupKey lkey(key, seq);
+  Slice mem_key = lkey.memtable_key();
+
+  std::unique_ptr<MemTableRep::Iterator> iter(
+      table_->GetDynamicPrefixIterator());
+  iter->Seek(lkey.internal_key(), mem_key.data());
+  Status status = Status::NotFound();
+  if (iter->Valid()) {
+    // entry format is:
+    //    key_length  varint32
+    //    userkey  char[klength-8]
+    //    tag      uint64
+    //    vlength  varint32
+    //    value    char[vlength]
+    // Check that it belongs to same user key. if not return corruption rc!!!
+
+    const char* entry = iter->key();
+    uint32_t key_length = 0;
+    const char* key_ptr = GetVarint32Ptr(entry, entry + 5, &key_length);
+    if (comparator_.comparator.user_comparator()->Equal(
+            Slice(key_ptr, key_length - 8), lkey.user_key())) {
+      char* p = EncodeVarint32(const_cast<char*>(key_ptr), key_length);
+      uint64_t packed = PackSequenceAndType(seq, kTypeIgnore);
+      EncodeFixed64(p, packed);
+      status = Status::OK();
+    }
+  }
+  return status;
+}
+
 Status MemTable::Update(SequenceNumber seq, const Slice& key,
                         const Slice& value,
                         const ProtectionInfoKVOS64* kv_prot_info) {

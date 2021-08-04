@@ -82,6 +82,7 @@ enum ContentFlags : uint32_t {
   HAS_DELETE_RANGE = 1 << 9,
   HAS_BLOB_INDEX = 1 << 10,
   HAS_BEGIN_UNPREPARE = 1 << 11,
+  HAS_IGNORE = 1 << 12,
 };
 
 struct BatchContentClassifier : public WriteBatch::Handler {
@@ -357,6 +358,7 @@ Status ReadRecordFromWriteBatch(Slice* input, char* tag,
         return Status::Corruption("bad WriteBatch Put");
       }
       FALLTHROUGH_INTENDED;
+    case kTypeIgnore:
     case kTypeValue:
       if (!GetLengthPrefixedSlice(input, key) ||
           !GetLengthPrefixedSlice(input, value)) {
@@ -664,6 +666,19 @@ Status WriteBatchInternal::Iterate(const WriteBatch* wb,
         assert(s.ok());
         empty_batch = true;
         break;
+      case kTypeIgnore:
+        // note this is part of rollback.
+        // the publish seq wasnt set yet so this entry on any read/seek will be
+        // ignore any way
+        assert(wb->content_flags_.load(std::memory_order_relaxed) &
+               (ContentFlags::DEFERRED | ContentFlags::HAS_IGNORE));
+        s = handler->IgnoreCF(key);
+        if (LIKELY(s.ok())) {
+          empty_batch = false;
+          found++;
+        }
+        break;
+
       default:
         return Status::Corruption("unknown WriteBatch tag");
     }
@@ -928,6 +943,14 @@ Status WriteBatchInternal::MarkEndPrepare(WriteBatch* b, const Slice& xid,
                                 ContentFlags::HAS_BEGIN_UNPREPARE,
                             std::memory_order_relaxed);
   }
+  return Status::OK();
+}
+
+Status WriteBatchInternal::MarkIgnore(WriteBatch* b) {
+  b->rep_.push_back(static_cast<char>(kTypeIgnore));
+  b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
+                              ContentFlags::HAS_IGNORE,
+                          std::memory_order_relaxed);
   return Status::OK();
 }
 
@@ -1865,6 +1888,14 @@ class MemTableInserter : public WriteBatch::Handler {
       ret_status = WriteBatchInternal::Put(rebuilding_trx_, column_family_id,
                                            key, value);
     }
+    return ret_status;
+  }
+
+  Status IgnoreCF(const Slice& key) override {
+    Status ret_status;
+    MemTable* mem = cf_mems_->GetMemTable();
+    ret_status = mem->UpdateIgnore(sequence_, key);
+
     return ret_status;
   }
 
