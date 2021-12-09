@@ -10,10 +10,14 @@
 SHELL := $(shell command -v bash || echo $(SHELL))
 include common.mk
 
+EXTRA_CXXFLAGS += -I/opt/homebrew/include
+EXTRA_LDFLAGS += -L/opt/homebrew/lib
+
+USE_RTTI=1
 CLEAN_FILES = # deliberately empty, so we can append below.
 CFLAGS += ${EXTRA_CFLAGS}
-CXXFLAGS += ${EXTRA_CXXFLAGS}
-LDFLAGS += $(EXTRA_LDFLAGS)
+CXXFLAGS += ${EXTRA_CXXFLAGS} -I/opt/homebrew/include
+LDFLAGS += $(EXTRA_LDFLAGS) -L/opt/homebrew/lib
 MACHINE ?= $(shell uname -m)
 ARFLAGS = ${EXTRA_ARFLAGS} rs
 STRIPFLAGS = -S -x
@@ -59,7 +63,7 @@ endif
 ifneq ($(filter dbg, $(MAKECMDGOALS)),)
 	DEBUG_LEVEL=2
 else ifneq ($(filter shared_lib install-shared, $(MAKECMDGOALS)),)
-	DEBUG_LEVEL=0
+	DEBUG_LEVEL=1
 	LIB_MODE=shared
 else ifneq ($(filter static_lib install-static, $(MAKECMDGOALS)),)
 	DEBUG_LEVEL=0
@@ -487,7 +491,7 @@ ifeq ($(PLATFORM), OS_OPENBSD)
 endif
 
 ifndef DISABLE_WARNING_AS_ERROR
-	WARNING_FLAGS += -Werror
+	WARNING_FLAGS += 
 endif
 
 
