@@ -220,6 +220,10 @@ ColumnFamilyOptions SanitizeOptions(const ImmutableDBOptions& db_options,
     result.arena_block_size =
         ((result.arena_block_size + align - 1) / align) * align;
   }
+  
+  result.min_write_buffer_number_to_merge = 30;
+  result.max_write_buffer_number = 40;
+  
   result.min_write_buffer_number_to_merge =
       std::min(result.min_write_buffer_number_to_merge,
                result.max_write_buffer_number - 1);
@@ -867,7 +871,7 @@ ColumnFamilyData::GetWriteStallConditionAndCause(
             WriteStallCause::kPendingCompactionBytes};
   } else if (mutable_cf_options.max_write_buffer_number > 3 &&
              num_unflushed_memtables >=
-                 mutable_cf_options.max_write_buffer_number - 1 &&
+                 mutable_cf_options.max_write_buffer_number * 2/3 &&
              num_unflushed_memtables - 1 >=
                  immutable_cf_options.min_write_buffer_number_to_merge) {
     return {WriteStallCondition::kDelayed, WriteStallCause::kMemtableLimit};

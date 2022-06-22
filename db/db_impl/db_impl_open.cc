@@ -37,6 +37,7 @@ Options SanitizeOptions(const std::string& dbname, const Options& src,
 
 DBOptions SanitizeOptions(const std::string& dbname, const DBOptions& src,
                           bool read_only) {
+  static std::shared_ptr<SpdbMemoryManager> s_spdb_memory_manager;
   DBOptions result(src);
 
   if (result.env == nullptr) {
@@ -62,20 +63,22 @@ DBOptions SanitizeOptions(const std::string& dbname, const DBOptions& src,
     }
   }
    
+  if (!s_spdb_memory_manager.get()) {
+    SpdbMemoryManagerOptions opt;
+    opt.dirty_data_size = 1024 * 1024 * 1024;
+    s_spdb_memory_manager.reset(new SpdbMemoryManager(opt));
+    result.spdb_memory_manager = s_spdb_memory_manager;
+  }
   if (result.spdb_memory_manager) {
     result.write_buffer_manager = result.spdb_memory_manager;
-  } else { 
-    if (!result.write_buffer_manager) {
-      result.write_buffer_manager.reset(
-          new WriteBufferManager(result.db_write_buffer_size));
-    }
-  }
-
-
-  if (!result.write_buffer_manager) {
+  } else  {
     result.write_buffer_manager.reset(
         new WriteBufferManager(result.db_write_buffer_size));
   }
+  result.max_background_flushes = 4;
+  result.max_background_compactions = 4;
+  result.max_background_jobs = 8;
+
   auto bg_job_limits = DBImpl::GetBGJobLimits(
       result.max_background_flushes, result.max_background_compactions,
       result.max_background_jobs, true /* parallelize_compactions */);
