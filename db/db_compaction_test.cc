@@ -2929,6 +2929,7 @@ TEST_P(DBCompactionTestWithParam, DeleteMovedFileAfterCompaction) {
     OnFileDeletionListener* listener = new OnFileDeletionListener();
     options.listeners.emplace_back(listener);
     options.max_subcompactions = max_subcompactions_;
+    options.avoid_unnecessary_blocking_io = false;
     DestroyAndReopen(options);
 
     Random rnd(301);
