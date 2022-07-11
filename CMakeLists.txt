@@ -996,9 +996,11 @@ else()
 endif()
 
 set(ROCKSDB_PLUGIN_EXTERNS "")
+set(ROCKSDB_PLUGIN_TESTS "")
 set(ROCKSDB_PLUGIN_BUILTINS "")
 message(STATUS "ROCKSDB PLUGINS TO BUILD ${ROCKSDB_PLUGINS}")
 list(APPEND PLUGINS ${ROCKSDB_PLUGINS})
+list(REMOVE_DUPLICATES PLUGINS)
 foreach(PLUGIN IN LISTS PLUGINS)
   set(PLUGIN_ROOT "${CMAKE_SOURCE_DIR}/plugin/${PLUGIN}/")
   message("including rocksb plugin ${PLUGIN_ROOT}")
@@ -1011,7 +1013,7 @@ foreach(PLUGIN IN LISTS PLUGINS)
   set(MK_SOURCES ${CMAKE_MATCH_1})
   separate_arguments(MK_SOURCES)
   foreach(MK_FILE IN LISTS MK_SOURCES)
-    list(APPEND SOURCES "${PLUGIN_ROOT}${MK_FILE}")
+    list(APPEND SOURCES "plugin/${PLUGIN}/${MK_FILE}")
   endforeach()
   string(REGEX MATCH "_FUNC = ([^\n]*)" FOO ${PLUGINMK})
   if (NOT ${CMAKE_MATCH_1} STREQUAL "")
@@ -1023,9 +1025,17 @@ foreach(PLUGIN IN LISTS PLUGINS)
     list(APPEND THIRDPARTY_LIBS "${CMAKE_MATCH_1}")
   endif()
   message("THIRDPARTY_LIBS=${THIRDPARTY_LIBS}")
+  string(REGEX MATCH "_TESTS = ([^\n]*)" FOO ${PLUGINMK})
+  if (NOT ${CMAKE_MATCH_1} STREQUAL "")
+    set(MK_TESTS ${CMAKE_MATCH_1})
+    separate_arguments(MK_TESTS)
+    foreach(MK_FILE IN LISTS MK_TESTS)
+      list(APPEND ROCKSDB_PLUGIN_TESTS "plugin/${PLUGIN}/${MK_FILE}")
+    endforeach()
+  endif()
+
   #TODO: We need to set any compile/link-time flags and add any link libraries
 endforeach()
-
 string(TIMESTAMP TS "%Y-%m-%d %H:%M:%S" UTC)
 set(BUILD_DATE "${TS}" CACHE STRING "the time we first built rocksdb")
 
@@ -1375,6 +1385,7 @@ if(WITH_TESTS)
         utilities/ttl/ttl_test.cc
         utilities/util_merge_operators_test.cc
         utilities/write_batch_with_index/write_batch_with_index_test.cc
+        ${ROCKSB_PLUGIN_TESTS}
     )
   endif()
 

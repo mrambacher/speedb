@@ -228,6 +228,17 @@ static std::unordered_map<std::string, OptionTypeInfo> simple_option_info = {
 #endif  // ROCKSDB_LITE
 };
 
+template <class T, class F>
+static int dynamic_unsafe_offsetof(const T& instance, const F& field) {
+  const char* instance_addr =
+      reinterpret_cast<const char*>(std::addressof(instance));
+  const char* field_addr = reinterpret_cast<const char*>(std::addressof(field));
+  assert(field_addr >= instance_addr);
+  const size_t offset = field_addr - instance_addr;
+  assert(offset < sizeof(instance));
+  return static_cast<int>(offset);
+}
+
 class SimpleConfigurable : public Configurable {
  private:
   SimpleOptions simple_;
