@@ -267,6 +267,10 @@ TOOLS_LIBRARY=$(STATIC_TOOLS_LIBRARY)
 endif
 STRESS_LIBRARY=$(STATIC_STRESS_LIBRARY)
 
+ifeq ($(strip $(filter speedb,$(ROCKSDB_PLUGINS))),)
+ROCKSDB_PLUGINS += speedb
+endif
+
 ROCKSDB_PLUGIN_MKS = $(foreach plugin, $(ROCKSDB_PLUGINS), plugin/$(plugin)/*.mk)
 include $(ROCKSDB_PLUGIN_MKS)
 ROCKSDB_PLUGIN_PROTO =ROCKSDB_NAMESPACE::ObjectLibrary\&, const std::string\&
