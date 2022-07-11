@@ -725,9 +725,9 @@ DEFINE_int32(random_access_max_buffer_size, 1024 * 1024,
 DEFINE_int32(writable_file_max_buffer_size, 1024 * 1024,
              "Maximum write buffer for Writable File");
 
-DEFINE_int32(bloom_bits, -1,
-             "Bloom filter bits per key. Negative means use default."
-             "Zero disables.");
+DEFINE_double(bloom_bits, -1,
+              "Bloom filter bits per key. Negative means use default."
+              "Zero disables.");
 
 DEFINE_bool(use_ribbon_filter, false, "Use Ribbon instead of Bloom filter");
 
@@ -1228,6 +1228,7 @@ static bool ValidateTableCacheNumshardbits(const char* flagname,
   return true;
 }
 DEFINE_int32(table_cache_numshardbits, 4, "");
+DEFINE_string(filter_uri, "", "URI for registry FilterPolicy");
 
 #ifndef ROCKSDB_LITE
 DEFINE_string(env_uri, "",
@@ -4345,7 +4346,17 @@ class Benchmark {
       if (FLAGS_cache_size) {
         table_options->block_cache = cache_;
       }
-      if (FLAGS_bloom_bits < 0) {
+      if (!FLAGS_filter_uri.empty()) {
+        ConfigOptions config_options;
+        config_options.ignore_unsupported_options = false;
+        Status s = FilterPolicy::CreateFromString(
+            config_options, FLAGS_filter_uri, &table_options->filter_policy);
+        if (!s.ok()) {
+          fprintf(stderr, "failure creating filter policy[%s]: %s\n",
+                  FLAGS_filter_uri.c_str(), s.ToString().c_str());
+          exit(1);
+        }
+      } else if (FLAGS_bloom_bits < 0) {
         table_options->filter_policy = BlockBasedTableOptions().filter_policy;
       } else if (FLAGS_bloom_bits == 0) {
         table_options->filter_policy.reset();
@@ -4362,9 +4373,13 @@ class Benchmark {
           exit(1);
         }
       } else {
-        table_options->filter_policy.reset(
-            FLAGS_use_ribbon_filter ? NewRibbonFilterPolicy(FLAGS_bloom_bits)
-                                    : NewBloomFilterPolicy(FLAGS_bloom_bits));
+        if (FLAGS_use_ribbon_filter) {
+          table_options->filter_policy.reset(
+              NewRibbonFilterPolicy(FLAGS_bloom_bits));
+        } else {
+          table_options->filter_policy.reset(
+              NewBloomFilterPolicy(FLAGS_bloom_bits));
+        }
       }
     }
     if (FLAGS_row_cache_size) {
@@ -4656,7 +4671,9 @@ class Benchmark {
         case SEQUENTIAL:
           return next_++;
         case RANDOM:
-          return rand_->Next() % num_;
+          // // // return rand_->Next() % num_;
+          // Return a random that is in an unlimited range
+          return rand_->Next();
         case UNIQUE_RANDOM:
           assert(next_ < num_);
           return values_[next_++];
@@ -5664,7 +5681,8 @@ class Benchmark {
     uint64_t rand_int = rand->Next();
     int64_t key_rand;
     if (read_random_exp_range_ == 0) {
-      key_rand = rand_int % FLAGS_num;
+      // // // key_rand = rand_int % FLAGS_num;
+      key_rand = rand_int;
     } else {
       const uint64_t kBigInt = static_cast<uint64_t>(1U) << 62;
       long double order = -static_cast<long double>(rand_int % kBigInt) /
