@@ -29,6 +29,8 @@
 #include <sys/statfs.h>
 #include <sys/sysmacros.h>
 #endif
+#include <fcntl.h>
+
 #include "monitoring/iostats_context_imp.h"
 #include "port/port.h"
 #include "port/stack_trace.h"
@@ -1489,14 +1491,14 @@ IOStatus PosixWritableFile::Allocate(uint64_t offset, uint64_t len,
 #endif
 
 IOStatus PosixWritableFile::RangeSync(uint64_t offset, uint64_t nbytes,
-                                      const IOOptions& opts,
-                                      IODebugContext* dbg) {
-#ifdef ROCKSDB_RANGESYNC_PRESENT
+                                      const IOOptions& /*opts*/,
+                                      IODebugContext* /*dbg*/) {
+//#ifdef ROCKSDB_RANGESYNC_PRESENT
   assert(offset <= static_cast<uint64_t>(std::numeric_limits<off_t>::max()));
   assert(nbytes <= static_cast<uint64_t>(std::numeric_limits<off_t>::max()));
-  if (sync_file_range_supported_) {
+  //if (sync_file_range_supported_) {
     int ret;
-    if (strict_bytes_per_sync_) {
+    /*if (strict_bytes_per_sync_) {
       // Specifying `SYNC_FILE_RANGE_WAIT_BEFORE` together with an offset/length
       // that spans all bytes written so far tells `sync_file_range` to wait for
       // any outstanding writeback requests to finish before issuing a new one.
@@ -1506,15 +1508,18 @@ IOStatus PosixWritableFile::RangeSync(uint64_t offset, uint64_t nbytes,
     } else {
       ret = sync_file_range(fd_, static_cast<off_t>(offset),
                             static_cast<off_t>(nbytes), SYNC_FILE_RANGE_WRITE);
-    }
+    }*/
+    ret = sync_file_range(fd_, static_cast<off_t>(offset),
+                      static_cast<off_t>(nbytes), 2);
+
     if (ret != 0) {
       return IOError("While sync_file_range returned " + ToString(ret),
                      filename_, errno);
     }
     return IOStatus::OK();
-  }
-#endif  // ROCKSDB_RANGESYNC_PRESENT
-  return FSWritableFile::RangeSync(offset, nbytes, opts, dbg);
+  //}
+//#endif  // ROCKSDB_RANGESYNC_PRESENT
+  //return FSWritableFile::RangeSync(offset, nbytes, opts, dbg);
 }
 
 #ifdef OS_LINUX

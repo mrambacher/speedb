@@ -1174,7 +1174,13 @@ class DBImpl : public DB {
   Status SpdbWrite(const WriteOptions& write_options, WriteBatch* my_batch,
                    bool disable_memtable);
   IOStatus SpdbWriteToWAL(WriteBatch* merged_batch, size_t write_with_wal,
-                          const WriteBatch* to_be_cached_state);
+                          const WriteBatch* to_be_cached_state, bool do_flush,
+                          uint64_t* offset, uint64_t* size);
+  IOStatus SpdbSyncWAL(uint64_t offset, uint64_t size);
+
+  void SuspendSpdbWrites();
+  void ResumeSpdbWrites();
+                        
 
  protected:
   const std::string dbname_;
@@ -2407,7 +2413,7 @@ class DBImpl : public DB {
 
   BlobFileCompletionCallback blob_callback_;
 
-  // Pointer tp Speedb write flow 
+  // Pointer tp Speedb write flow
   std::unique_ptr<SpdbWriteImpl> spdb_write_;
 
   // Pointer to WriteBufferManager stalling interface.

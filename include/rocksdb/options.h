@@ -1074,7 +1074,7 @@ struct DBOptions {
   // This is an experimental feature.
   //
   // Default: false
-  bool use_spdb_writes = false;
+  bool use_spdb_writes = true;
 
   // If true, threads synchronizing with the write batch group leader will
   // wait for up to write_thread_max_yield_usec before blocking on a mutex.
@@ -1699,6 +1699,9 @@ struct WriteOptions {
   // Default: `Env::IO_TOTAL`
   Env::IOPriority rate_limiter_priority;
 
+  bool txn_write;
+
+
   WriteOptions()
       : sync(false),
         disableWAL(false),
@@ -1706,7 +1709,8 @@ struct WriteOptions {
         no_slowdown(false),
         low_pri(false),
         memtable_insert_hint_per_batch(false),
-        rate_limiter_priority(Env::IO_TOTAL) {}
+        rate_limiter_priority(Env::IO_TOTAL),
+        txn_write(false) {}
 };
 
 // Options that control flush operations

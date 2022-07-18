@@ -275,6 +275,7 @@ class WritableFileWriter {
   std::string GetFileChecksum();
 
   const char* GetFileChecksumFuncName() const;
+  IOStatus RangeSync(uint64_t offset, uint64_t nbytes);
 
  private:
   static Env::IOPriority DecideRateLimiterPriority(
@@ -292,7 +293,8 @@ class WritableFileWriter {
                          Env::IOPriority op_rate_limiter_priority);
   IOStatus WriteBufferedWithChecksum(const char* data, size_t size,
                                      Env::IOPriority op_rate_limiter_priority);
-  IOStatus RangeSync(uint64_t offset, uint64_t nbytes);
+  //IOStatus RangeSync(uint64_t offset, uint64_t nbytes);
+  //IOStatus RangeSyncSPDB(uint64_t offset, uint64_t nbytes);
   IOStatus SyncInternal(bool use_fsync);
 };
 }  // namespace ROCKSDB_NAMESPACE

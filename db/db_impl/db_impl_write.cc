@@ -175,9 +175,9 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     return Status::NotSupported(
         "pipelined_writes is not compatible with concurrent prepares");
   }
-  if (immutable_db_options_.allow_concurrent_memtable_write &&
-      spdb_write_ && !seq_per_batch_ &&
-      !two_write_queues_) {
+  if (immutable_db_options_.allow_concurrent_memtable_write && spdb_write_ &&
+      !seq_per_batch_ && !two_write_queues_ && WriteBatchInternal::Count(my_batch) > 0 &&
+      !write_options.txn_write) {
     // TBD AYELET this is temporary. the handle of transaction in write flow
     // needs careful assignment
     return SpdbWrite(write_options, my_batch, disable_memtable);
@@ -1020,8 +1020,6 @@ void DBImpl::IOStatusCheck(const IOStatus& io_status) {
     mutex_.Unlock();
   }
 }
-
-
 
 void DBImpl::MemTableInsertStatusCheck(const Status& status) {
   // A non-OK status here indicates that the state implied by the
