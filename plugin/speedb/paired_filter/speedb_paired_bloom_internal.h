@@ -20,15 +20,15 @@ enum class FilterType {
                          // future version
 };
 
-// Speedb's Proprietary Bloom filters data:
-//             0 +-----------------------------------+
+// Speedb's Bloom filters data:
+//             0 |-----------------------------------|
 //               | Raw Paired Bloom filter data      |
 //               | ...                               |
-//           len +-----------------------------------+
+//           len |-----------------------------------|
 //               | bytes Spdb Filter Types           |
 //               |   0: SpdbPairedBloom              |
 //               |   other: reserved                 |
-//         len+1 +-----------------------------------+
+//         len+1 |-----------------------------------|
 //               | byte for block_and_probes         |
 //               |   0 in top 3 bits -> 6 -> 64-byte |
 //               |   reserved:                       |
@@ -37,19 +37,19 @@ enum class FilterType {
 //               |   ...                             |
 //               |   num_probes in bottom 5 bits,    |
 //               |     except 0 and 31 reserved      |
-//         len+2 +-----------------------------------+
+//         len+2 |-----------------------------------|
 //               | two bytes reserved                |
 //               |   possibly for hash seed          |
-// len_with_meta +-----------------------------------+
+// len_with_meta |-----------------------------------|
 class FilterMetadata {
  public:
   // Metadata trailer size for Speedb's filters. (This is separate from
   // block-based table block trailer). Starting at len in the diagram above
-  static constexpr uint32_t MetadataLen = 4U;
+  static constexpr uint32_t kMetadataLen = 4U;
 
   struct Fields {
-    size_t num_probes_;
-    FilterType filter_type_;
+    size_t num_probes;
+    FilterType filter_type;
   };
 
  public:

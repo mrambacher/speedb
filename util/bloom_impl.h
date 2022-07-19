@@ -238,7 +238,7 @@ class FastLocalBloomImpl {
   //
   // IMPORTANT: THIS CODE ASSUMES A BLOCK (CACHE-LINE) SIZE OF 64 BYTES !!!!
   //
-  static inline std::pair<bool, bool> TestBitsInBloomBlock(
+  static inline std::pair<bool, bool> CheckBitsPositionsInBloomBlock(
       int num_probes, __m256i &hash_vector, const char *const block_address_) {
     // Now the top 9 bits of each of the eight 32-bit values in
     // hash_vector are bit addresses for probes within the cache line.
@@ -353,8 +353,8 @@ class FastLocalBloomImpl {
       // associativity of multiplication.
       hash_vector = _mm256_mullo_epi32(hash_vector, multipliers);
 
-      auto [is_done, answer] =
-          TestBitsInBloomBlock(rem_probes, hash_vector, data_at_cache_line);
+      auto [is_done, answer] = CheckBitsPositionsInBloomBlock(
+          rem_probes, hash_vector, data_at_cache_line);
       if (is_done) {
         return answer;
       }

@@ -236,7 +236,7 @@ static int dynamic_unsafe_offsetof(const T& instance, const F& field) {
   assert(field_addr >= instance_addr);
   const size_t offset = field_addr - instance_addr;
   assert(offset < sizeof(instance));
-  return static_cast<int>(offset);
+  return offset;
 }
 
 class SimpleConfigurable : public Configurable {
