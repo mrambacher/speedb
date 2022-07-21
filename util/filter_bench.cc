@@ -470,7 +470,8 @@ void FilterBench::Go() {
       ROCKSDB_NAMESPACE::StopWatchNano in_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
       for (uint32_t j = 0; j < info.keys_added_; ++j) {
         // // ALWAYS_ASSERT(info.reader_->MayMatch(kms_[0].Get(info.filter_id_, j)));
-        ALWAYS_ASSERT(info.reader_->MayMatch(in_keys[j]));
+        // // // ALWAYS_ASSERT(info.reader_->MayMatch(in_keys[j]));
+        info.reader_->MayMatch(in_keys[j]);
       }
       double in_ns = double(in_timer.ElapsedNanos()) / info.keys_added_;
       // // std::cout << "BUILD:" << finish_ns << '\n';
@@ -478,11 +479,13 @@ void FilterBench::Go() {
 
       std::vector<std::string> out_keys(outside_q_per_f);
       std::vector<Slice> out_keys_slice(outside_q_per_f);
+      std::vector<uint32_t> out_hashes(outside_q_per_f);
       for (uint32_t j = 0; j < outside_q_per_f; ++j) {
         Slice out_key = kms_[0].Get(info.filter_id_, j | 0x80000000);
         out_keys[j] = std::string(out_key.data(), out_key.size());
         out_keys_slice[j] = out_keys[j];
-        }
+        out_hashes[j] = Upper32of64(GetSliceHash64(out_keys_slice[j]));
+      }
 
       // =================================== CHECK OUT KEYS ============================================
       ROCKSDB_NAMESPACE::StopWatchNano out_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
@@ -501,6 +504,14 @@ void FilterBench::Go() {
       double prelim_rate1 = double(fps1) / outside_q_per_f / infos_.size();
       uint32_t fpr = (100 / (100.0 * prelim_rate1));
       std::cout << "num_checks:" << num_checks << ", avg_num_checks:" << avg_num_checks << ", avs_double_hash:" << (100 * avs_double_hash) << "%,   FPR:" << fpr << '\n';
+
+      // // uint32_t sum = 0U;
+      // // ROCKSDB_NAMESPACE::StopWatchNano mask_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
+      // // for (uint32_t j = 0; j < outside_q_per_f; ++j) {        
+      // //   sum += out_hashes[j] % 128;
+      // // }
+      // // double mask_ns = double(mask_timer.ElapsedNanos()) / outside_q_per_f;
+      // // std::cout << "MASK NS:" << mask_ns << ", sum = " << sum << '\n';
     }
 
     // // // std::cout << " No FNs :)" << std::endl;
@@ -829,18 +840,18 @@ std::pair<Policy, int> CreateFilterPolicy() {
 extern bool g_rocksdb_use_avx2;
 extern bool g_rocksdb_force_16_probes;
 
-extern bool g_speedb_use_middle_optimization;
 extern bool g_speedb_use_avx2;
 extern bool g_speedb_prefetch_on_query;
 extern bool g_speedb_use_double_hash;
+extern bool g_speedb_return_after_1st;
 
 bool g_rocksdb_use_avx2 = true;
 bool g_rocksdb_force_16_probes = true;
 
-bool g_speedb_use_middle_optimization = true;
 bool g_speedb_use_avx2 = true;
 bool g_speedb_prefetch_on_query = true;
 bool g_speedb_use_double_hash = true;
+bool g_speedb_return_after_1st = true;
 
 int main(int argc, char **argv) {
   ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
@@ -884,11 +895,10 @@ int main(int argc, char **argv) {
              FLAGS_vary_key_count_ratio > 1.0) {
     throw std::runtime_error("-vary_key_count_ratio must be >= 0.0 and <= 1.0");
   } else {
-#if 0    
     {
       FLAGS_impl = "rocksdb.internal.FastLocalBloomFilter:23.4";
-      for (auto use_avx2: {false}) {
-        for (auto force_16_probes: {false, true}) {
+      for (auto use_avx2: {false, true}) {
+        for (auto force_16_probes: {true}) {
           num_checks = 0;
           g_rocksdb_use_avx2 = use_avx2;
           g_rocksdb_force_16_probes = force_16_probes;
@@ -905,33 +915,25 @@ int main(int argc, char **argv) {
           }
       }
     }
-#endif
 
     FLAGS_impl = "spdb.PairedBloomFilter:23.4";
-    for (auto use_middle_optimization: {false}) {
-      for (auto use_avx2: {false}) {
+      for (auto use_avx2: {false, true}) {
         for (auto prefetch_on_query: {true}) {
-          for (auto use_double_hash: {true}) {
-            g_speedb_use_middle_optimization = use_middle_optimization;
-            g_speedb_use_avx2 = use_avx2;
-            g_speedb_prefetch_on_query = prefetch_on_query;        
-            g_speedb_use_double_hash = use_double_hash;    
-            std::cout << std::boolalpha << "\nSPEEDB - "
-                      << "Middle Optimization:" << g_speedb_use_middle_optimization
-                      << ", AVX2:" << g_speedb_use_avx2
-                      << ", Prefetch:" << g_speedb_prefetch_on_query
-                      << ", Double-Hash:" << g_speedb_use_double_hash;
-            num_checks = 0;
-            auto [policy, bloom_idx] = CreateFilterPolicy();
-            ROCKSDB_NAMESPACE::FilterBench b(policy, bloom_idx);
-            for (uint32_t i = 0; i < FLAGS_runs; ++i) {
-              b.Go();
-              FLAGS_seed += 100;
-              b.random_.Seed(FLAGS_seed);
-            }
+          g_speedb_use_avx2 = use_avx2;
+          g_speedb_prefetch_on_query = prefetch_on_query;        
+          std::cout << std::boolalpha << "\nSPEEDB - "
+                    << ", AVX2:" << g_speedb_use_avx2
+                    << ", Prefetch:" << g_speedb_prefetch_on_query
+                    << ", Double-Hash:" << g_speedb_use_double_hash;
+          num_checks = 0;
+          auto [policy, bloom_idx] = CreateFilterPolicy();
+          ROCKSDB_NAMESPACE::FilterBench b(policy, bloom_idx);
+          for (uint32_t i = 0; i < FLAGS_runs; ++i) {
+            b.Go();
+            FLAGS_seed += 100;
+            b.random_.Seed(FLAGS_seed);
           }
         }
-      }
     }
   }
 
