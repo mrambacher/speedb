@@ -11,9 +11,19 @@
 #include <vector>
 
 #include "port/port.h"  // for PREFETCH
+#include "port/likely.h"  // for LIKELY
 #include "test_util/sync_point.h"
 #include "util/bloom_impl.h"
 #include "util/fastrange.h"
+
+#include <stdio.h>
+extern bool g_speedb_use_test_bloom;
+extern bool g_speedb_use_avx2;
+extern bool g_speedb_prefetch_on_query;
+extern bool g_speedb_use_double_hash;
+
+extern int num_checks;
+extern int g_num_double_hash;
 
 #ifdef HAVE_AVX2
 #include <immintrin.h>
@@ -145,6 +155,10 @@ inline double SpdbStandardFpRate(double bits_per_key, double raw_num_probes) {
                   raw_num_probes);
 }
 
+inline uint32_t Middle32of64(uint64_t v) {
+  return static_cast<uint32_t>(v >> 16);
+}
+
 class BuildBlock {
  public:
   BuildBlock() = default;
@@ -153,6 +167,7 @@ class BuildBlock {
   uint8_t GetInBatchBlockIdxOfPair() const;
   void SetInBatchBlockIdxOfPair(InBatchBlockIdx pair_batch_block_idx);
   void SetBlockBloomBits(uint32_t hash, uint32_t set_idx, size_t hash_set_size);
+  void SetBlockBloomBits_Test(uint32_t hash, size_t hash_set_size);
 
  private:
   char* const block_address_ = nullptr;
@@ -179,11 +194,22 @@ inline void BuildBlock::SetInBatchBlockIdxOfPair(
       (pair_batch_block_idx | (*block_address_ & kFirstByteBitsMask));
 }
 
-inline int GetBitPosInBlockForHash(uint32_t hash) {
+inline int GetBitPosInBlockForHashXXXX(uint32_t hash) {
   return kInBatchIdxNumBits +
          (static_cast<uint32_t>(KNumBitsInBlockBloom *
                                 (hash >> kBlockSizeNumBits)) >>
           (kNumBlockSizeBitsShiftBits));
+}
+
+inline int GetBitPosInBlockForHash_Test(uint32_t hash) {
+  if (!g_speedb_use_double_hash) return GetBitPosInBlockForHashXXXX(hash);
+
+  int bitpos = hash >> 23;
+  if (LIKELY(bitpos > 6)) {
+    return bitpos;
+  }
+  ++g_num_double_hash;
+  return GetBitPosInBlockForHashXXXX(hash);
 }
 
 inline void BuildBlock::SetBlockBloomBits(uint32_t hash, uint32_t set_idx,
@@ -194,12 +220,35 @@ inline void BuildBlock::SetBlockBloomBits(uint32_t hash, uint32_t set_idx,
     hash *= HashSetsSeeds[hash_set_size];
   }
 
+  // // static bool has_printed = false;  
+  // // uint32_t hashes[100];
   for (auto i = 0U; i < hash_set_size; ++i) {
-    int bitpos = GetBitPosInBlockForHash(hash);
+    // // hashes[i] = hash;
+    int bitpos = GetBitPosInBlockForHash_Test(hash);
+    // // if (!has_printed) {
+    // //   fprintf(stderr, "i:%u, %d, ", i, bitpos);
+    // // }
+    block_address_[bitpos >> 3] |= (char{1} << (bitpos & kInBatchIdxNumBits));
+    hash *= 0x9e3779b9;
+  }
+  // // if (!has_printed) {
+  // //   fprintf(stderr, "\n");
+  // //   for (auto i = 0U; i < hash_set_size; ++i) {
+  // //     fprintf(stderr, "hash[%u]: %#010x\n", i, hashes[i]);
+  // //   }
+  // //   has_printed = true;
+  // // }
+}
+
+inline void BuildBlock::SetBlockBloomBits_Test(uint32_t hash,
+                                          size_t hash_set_size) {
+  for (auto i = 0U; i < hash_set_size; ++i) {
+    int bitpos = GetBitPosInBlockForHash_Test(hash);
     block_address_[bitpos >> 3] |= (char{1} << (bitpos & kInBatchIdxNumBits));
     hash *= 0x9e3779b9;
   }
 }
+
 
 class ReadBlock {
  public:
@@ -209,13 +258,17 @@ class ReadBlock {
   bool AreAllBlockBloomBitsSet(uint32_t hash, uint32_t set_idx,
                                size_t hash_set_size) const;
 
+  bool AreAllBlockBloomBitsSet_Test(uint32_t hash, size_t hash_set_size) const;
+
  private:
 #ifdef HAVE_AVX2
   bool AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
                                    size_t hash_set_size) const;
+  bool AreAllBlockBloomBitsSetAvx2_Test(uint32_t hash, size_t hash_set_size) const;
 #endif
   bool AreAllBlockBloomBitsSetNonAvx2(uint32_t hash, uint32_t set_idx,
                                       size_t hash_set_size) const;
+  bool AreAllBlockBloomBitsSetNonAvx2_Test(uint32_t hash, size_t hash_set_size) const;
 
  private:
   const char* const block_address_;
@@ -248,7 +301,34 @@ bool ReadBlock::AreAllBlockBloomBitsSet(uint32_t hash, uint32_t set_idx,
 #endif
 }
 
+bool ReadBlock::AreAllBlockBloomBitsSet_Test(uint32_t hash, size_t hash_set_size) const {
 #ifdef HAVE_AVX2
+  // The AVX2 code currently supports only cache-line / block sizes of 64 bytes
+  // (512 bits)
+  if (kBlockSizeInBits == 512 && g_speedb_use_avx2) {
+    return AreAllBlockBloomBitsSetAvx2_Test(hash, hash_set_size);
+  } else {
+    return AreAllBlockBloomBitsSetNonAvx2_Test(hash, hash_set_size);
+  }
+#else  
+  return AreAllBlockBloomBitsSetNonAvx2_Test(hash, hash_set_size);
+#endif
+}
+
+// // // int s_bitpos_s[8];
+
+#ifdef HAVE_AVX2
+// // // void Print_m256i(const std::string& title, const __m256i & value) {
+// // //     fprintf(stderr, "%s", title.c_str());
+// // //     const size_t n = sizeof(__m256i) / sizeof(uint32_t);
+// // //     uint32_t buffer[n];
+// // //     _mm256_storeu_si256((__m256i*)buffer, value);
+// // //     for (auto i = 0U; i < n; i++)
+// // //       fprintf(stderr, "[%u] %#010x, ", i, buffer[i]);
+
+// // //     fprintf(stderr, "\n");
+// // // }
+
 bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
                                             size_t hash_set_size) const {
   assert(kBlockSizeInBytes == 64U);
@@ -264,9 +344,13 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
       _mm256_setr_epi32(0x00000001, 0x9e3779b9, 0xe35e67b1, 0x734297e9,
                         0x35fbe861, 0xdeb7c719, 0x448b211, 0x3459b749);
 
+  // // // auto orig_hash = hash;
   if (set_idx == 1) {
     assert(hash_set_size < HashSetsSeeds.size());
     hash *= HashSetsSeeds[hash_set_size];
+    // // // fprintf(stderr, "set_idx:%d, seed_multiplier:%#010x, orig_hash:%#010x, hash:%#010x\n", (int)set_idx, HashSetsSeeds[hash_set_size], orig_hash, hash);
+  } else {
+      // // // fprintf(stderr, "set_idx:%d, orig_hash:%#010x, hash:%#010x\n", (int)set_idx, orig_hash, hash);
   }
 
   for (;;) {
@@ -277,7 +361,63 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
     // associativity of multiplication.
     hash_vector = _mm256_mullo_epi32(hash_vector, multipliers);
 
-    // AVX2 code to calculate the equivalent of GetBitPosInBlockForHash() for up
+    // AVX2 code to calculate the equivalent of GetBitPosInBlockForHash_Test() for up
+    // to 8 hashes
+
+    // Shift right the hashes by kBlockSizeNumBits
+    hash_vector = _mm256_srli_epi32(hash_vector, kBlockSizeNumBits);
+
+    // Multiplying by 505 => The result (lower 32 bits will be in the range
+    // 0-504 (in the 9 MSB bits).
+    __m256i fast_range_vec = _mm256_set1_epi32(KNumBitsInBlockBloom);
+    hash_vector = _mm256_mullo_epi32(hash_vector, fast_range_vec);
+
+    hash_vector = _mm256_srli_epi32(hash_vector, kNumBlockSizeBitsShiftBits);
+
+    // Add 7 to get the final bit position in the range 7 - 511 (In the 9 MSB
+    // bits)
+    __m256i num_idx_bits_vec = _mm256_set1_epi32(kInBatchIdxNumBits);
+    hash_vector = _mm256_add_epi32(hash_vector, num_idx_bits_vec);
+
+    hash_vector = _mm256_slli_epi32(hash_vector, kNumBlockSizeBitsShiftBits);
+
+    auto [is_done, answer] = FastLocalBloomImpl::CheckBitsPositionsInBloomBlock(
+        rem_probes, hash_vector, block_address_);
+    if (is_done) {
+      return answer;
+    }
+
+    // otherwise
+    // Need another iteration. 0xab25f4c1 == golden ratio to the 8th power
+    hash *= 0xab25f4c1;
+    rem_probes -= 8;
+  }
+}
+
+bool ReadBlock::AreAllBlockBloomBitsSetAvx2_Test(uint32_t hash, size_t hash_set_size) const {
+  assert(kBlockSizeInBytes == 64U);
+
+  // // // fprintf(stderr, "In AreAllBlockBloomBitsSetAvx2_Test\n");
+  int rem_probes = static_cast<int>(hash_set_size);
+
+  // NOTE: This code is an adaptation of the equivalent code for RocksDB's
+  // bloom filter testing code using AVX2.
+  // See bloom_impl.h for more details
+
+  // Powers of 32-bit golden ratio, mod 2**32.
+  const __m256i multipliers =
+      _mm256_setr_epi32(0x00000001, 0x9e3779b9, 0xe35e67b1, 0x734297e9,
+                        0x35fbe861, 0xdeb7c719, 0x448b211, 0x3459b749);
+
+  for (;;) {
+    // Eight copies of hash
+    __m256i hash_vector = _mm256_set1_epi32(hash);
+
+    // Same effect as repeated multiplication by 0x9e3779b9 thanks to
+    // associativity of multiplication.
+    hash_vector = _mm256_mullo_epi32(hash_vector, multipliers);
+
+    // AVX2 code to calculate the equivalent of GetBitPosInBlockForHash_Test() for up
     // to 8 hashes
 
     // Shift right the hashes by kBlockSizeNumBits
@@ -314,13 +454,34 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
 
 bool ReadBlock::AreAllBlockBloomBitsSetNonAvx2(uint32_t hash, uint32_t set_idx,
                                                size_t hash_set_size) const {
+                                              
+  // // // auto orig_hash = hash;
   if (set_idx == 1) {
     assert(hash_set_size < HashSetsSeeds.size());
     hash *= HashSetsSeeds[hash_set_size];
+    // // fprintf(stderr, "NonAVX2: set_idx:%d, seed_multiplier:%#010x, orig_hash:%#010x, hash:%#010x\n", (int)set_idx, HashSetsSeeds[hash_set_size], orig_hash, hash);
+  } else {
+    // // // fprintf(stderr, "NonAVX2: set_idx:%d, orig_hash:%#010x, hash:%#010x\n", (int)set_idx, orig_hash, hash);
   }
 
   for (auto i = 0U; i < hash_set_size; ++i) {
-    int bitpos = GetBitPosInBlockForHash(hash);
+    ++num_checks;
+    int bitpos = GetBitPosInBlockForHash_Test(hash);
+    // // // s_bitpos_s[i] = bitpos;
+    // // // fprintf(stderr, "i:%u, hash:%#010x, bitpos:%#5x\n", i, hash, bitpos);
+    if ((block_address_[bitpos >> 3] &
+         (char{1} << (bitpos & kInBatchIdxNumBits))) == 0) {
+      return false;
+    }
+    hash *= 0x9e3779b9;
+  }
+  return true;
+}
+
+bool ReadBlock::AreAllBlockBloomBitsSetNonAvx2_Test(uint32_t hash, size_t hash_set_size) const {
+  for (auto i = 0U; i < hash_set_size; ++i) {
+    ++num_checks;
+    int bitpos = GetBitPosInBlockForHash_Test(hash);
     if ((block_address_[bitpos >> 3] &
          (char{1} << (bitpos & kInBatchIdxNumBits))) == 0) {
       return false;
@@ -632,6 +793,7 @@ void SpdbPairedBloomBitsBuilder::BuildBlocks(char* data,
   std::array<BuildBlock, kArraySize> secondary_blocks;
   std::array<uint8_t, kArraySize> primary_hash_selectors;
   std::array<uint32_t, kArraySize> upper_32_bits_of_hashes;
+  std::array<uint32_t, kArraySize> middle_32_bits_of_hashes;
 
   auto const hash_set_size = num_probes_ / 2;
 
@@ -663,6 +825,9 @@ void SpdbPairedBloomBitsBuilder::BuildBlocks(char* data,
         BuildBlock(data, secondary_global_block_idx, true);
 
     upper_32_bits_of_hashes[i] = Upper32of64(hash);
+    if (g_speedb_use_test_bloom) {
+      middle_32_bits_of_hashes[i] = Middle32of64(hash);
+    }
     ++hash_entries_it;
   }
 
@@ -670,15 +835,26 @@ void SpdbPairedBloomBitsBuilder::BuildBlocks(char* data,
   for (; i < num_entries; ++i) {
     auto idx = i & kBufferMask;
     uint32_t& upper_32_bits_of_hash_ref = upper_32_bits_of_hashes[idx];
+    uint32_t& middle_32_bits_of_hash_ref = middle_32_bits_of_hashes[idx];
     auto& primary_block_ref = primary_blocks[idx];
     auto& secondary_block_ref = secondary_blocks[idx];
     auto& primary_hash_selector_ref = primary_hash_selectors[idx];
 
+    if (!g_speedb_use_test_bloom) {
     primary_block_ref.SetBlockBloomBits(
         upper_32_bits_of_hash_ref, primary_hash_selector_ref, hash_set_size);
     secondary_block_ref.SetBlockBloomBits(upper_32_bits_of_hash_ref,
                                           1 - primary_hash_selector_ref,
                                           hash_set_size);
+    } else {
+      if (primary_hash_selector_ref == 0) {
+        primary_block_ref.SetBlockBloomBits_Test(upper_32_bits_of_hash_ref, hash_set_size);
+        secondary_block_ref.SetBlockBloomBits_Test(middle_32_bits_of_hash_ref, hash_set_size);
+      } else {
+        primary_block_ref.SetBlockBloomBits_Test(middle_32_bits_of_hash_ref, hash_set_size);
+        secondary_block_ref.SetBlockBloomBits_Test(upper_32_bits_of_hash_ref, hash_set_size);
+      }
+    }
 
     // And buffer
     uint64_t hash = *hash_entries_it;
@@ -702,16 +878,29 @@ void SpdbPairedBloomBitsBuilder::BuildBlocks(char* data,
         BuildBlock(data, secondary_global_block_idx, true);
 
     upper_32_bits_of_hash_ref = Upper32of64(hash);
+    if (g_speedb_use_test_bloom) {
+      middle_32_bits_of_hash_ref = Middle32of64(hash);
+    }
     ++hash_entries_it;
   }
 
   // Finish processing
   for (i = 0; i <= kBufferMask && i < num_entries; ++i) {
+    if (!g_speedb_use_test_bloom) {
     primary_blocks[i].SetBlockBloomBits(
         upper_32_bits_of_hashes[i], primary_hash_selectors[i], hash_set_size);
     secondary_blocks[i].SetBlockBloomBits(upper_32_bits_of_hashes[i],
                                           1 - primary_hash_selectors[i],
                                           hash_set_size);
+    } else {
+      if (primary_hash_selectors[i] == 0) {
+        primary_blocks[i].SetBlockBloomBits_Test(upper_32_bits_of_hashes[i], hash_set_size);
+        secondary_blocks[i].SetBlockBloomBits_Test(middle_32_bits_of_hashes[i], hash_set_size);
+      } else {
+        primary_blocks[i].SetBlockBloomBits_Test(middle_32_bits_of_hashes[i], hash_set_size);
+        secondary_blocks[i].SetBlockBloomBits_Test(upper_32_bits_of_hashes[i], hash_set_size);
+      }
+    }
   }
 }
 
@@ -756,7 +945,8 @@ bool SpdbPairedBloomBitsReader::HashMayMatch(const uint64_t hash) {
   // Not prefetching as performance seems to improve
   // TODO: Needs additional verification
   ReadBlock primary_block(data_, primary_global_block_idx,
-                          false /* prefetch */);
+                          // // // false /* prefetch */);
+                          g_speedb_prefetch_on_query /* prefetch */);
 
   uint8_t primary_in_batch_block_idx =
       GetInBatchBlockIdx(primary_global_block_idx);
@@ -768,10 +958,24 @@ bool SpdbPairedBloomBitsReader::HashMayMatch(const uint64_t hash) {
   auto const hash_set_size = num_probes_ / 2;
 
   const uint32_t upper_32_bits_of_hash = Upper32of64(hash);
+  uint32_t middle_32_bits_of_hash = 0U;
+  if (!g_speedb_use_test_bloom) {
   if (primary_block.AreAllBlockBloomBitsSet(upper_32_bits_of_hash,
                                             primary_block_hash_selector,
                                             hash_set_size) == false) {
     return false;
+  }
+  } else {
+    middle_32_bits_of_hash = Middle32of64(hash);
+    if (primary_block_hash_selector == 0) {
+      if (primary_block.AreAllBlockBloomBitsSet_Test(upper_32_bits_of_hash, hash_set_size) == false) {
+          return false;
+      }
+    } else {
+      if (primary_block.AreAllBlockBloomBitsSet_Test(middle_32_bits_of_hash, hash_set_size) == false) {
+          return false;
+      }
+    }
   }
 
   uint32_t secondary_block_hash_selector = 1 - primary_block_hash_selector;
@@ -780,9 +984,18 @@ bool SpdbPairedBloomBitsReader::HashMayMatch(const uint64_t hash) {
       GetFirstGlobalBlockIdxOfBatch(batch_idx) + secondary_in_batch_block_idx;
 
   ReadBlock secondary_block(data_, secondary_global_block_idx,
-                            false /* prefetch */);
+                            // // // false /* prefetch */);
+                            g_speedb_prefetch_on_query /* prefetch */);
+  if (!g_speedb_use_test_bloom) {                          
   return secondary_block.AreAllBlockBloomBitsSet(
       upper_32_bits_of_hash, secondary_block_hash_selector, hash_set_size);
+  } else {
+    if (primary_block_hash_selector == 0) {
+      return secondary_block.AreAllBlockBloomBitsSet_Test(middle_32_bits_of_hash, hash_set_size);
+    } else {
+      return secondary_block.AreAllBlockBloomBitsSet_Test(upper_32_bits_of_hash, hash_set_size);
+    }
+  }
 }
 
 bool SpdbPairedBloomBitsReader::MayMatch(const Slice& key) {

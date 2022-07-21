@@ -3,6 +3,11 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
+extern int num_checks;
+extern int g_num_double_hash;
+int num_checks = 0;
+int g_num_double_hash = 0;
+
 #if !defined(GFLAGS) || defined(ROCKSDB_LITE)
 #include <cstdio>
 int main() {
@@ -125,6 +130,8 @@ DEFINE_bool(legend, false,
             "running tests");
 
 DEFINE_uint32(runs, 1, "Number of times to rebuild and run benchmark tests");
+
+DEFINE_bool(paired_use_test, false, "");
 
 void _always_assert_fail(int line, const char *file, const char *expr) {
   fprintf(stderr, "%s: %d: Assertion %s failed\n", file, line, expr);
@@ -321,7 +328,7 @@ void FilterBench::Go() {
     working_mem_size_mb /= 10.0;
   }
 
-  std::cout << "Building..." << std::endl;
+  // // // std::cout << "Building..." << std::endl;
 
   std::unique_ptr<BuiltinFilterBitsBuilder> builder;
 
@@ -344,6 +351,7 @@ void FilterBench::Go() {
   ROCKSDB_NAMESPACE::StopWatchNano timer(
       ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
 
+  // // double finish_ns = 0U;
   infos_.clear();
   while ((working_mem_size_mb == 0 || total_size < max_mem) &&
          total_keys_added < max_total_keys) {
@@ -376,8 +384,13 @@ void FilterBench::Go() {
       for (uint32_t i = 0; i < keys_to_add; ++i) {
         builder->AddKey(kms_[0].Get(filter_id, i));
       }
+
+      // // // std::cout << "Finish Filter Building!!!!!\n";
+      // // ROCKSDB_NAMESPACE::StopWatchNano finish_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
       info.filter_ =
           builder->Finish(&info.owner_, &info.filter_construction_status);
+      // // finish_ns = double(finish_timer.ElapsedNanos()) / info.keys_added_;
+
       if (info.filter_construction_status.ok()) {
         info.filter_construction_status =
             builder->MaybePostVerify(info.filter_);
@@ -411,68 +424,96 @@ void FilterBench::Go() {
     total_keys_added += keys_to_add;
   }
 
-  uint64_t elapsed_nanos = timer.ElapsedNanos();
-  double ns = double(elapsed_nanos) / total_keys_added;
-  std::cout << "Build avg ns/key: " << ns << std::endl;
+  // // // uint64_t elapsed_nanos = timer.ElapsedNanos();
+  // // // double ns = double(elapsed_nanos) / total_keys_added;
+  // // // std::cout << "Build avg ns/key: " << ns << std::endl;
   std::cout << "Number of filters: " << infos_.size() << std::endl;
-  std::cout << "Total size (MB): " << total_size / 1024.0 / 1024.0 << std::endl;
-  if (total_memory_used > 0) {
-    std::cout << "Reported total allocated memory (MB): "
-              << total_memory_used / 1024.0 / 1024.0 << std::endl;
-    std::cout << "Reported internal fragmentation: "
-              << (total_memory_used - total_size) * 100.0 / total_size << "%"
-              << std::endl;
-  }
+  // // // std::cout << "Total size (MB): " << total_size / 1024.0 / 1024.0 << std::endl;
+  // // // if (total_memory_used > 0) {
+  // // //   std::cout << "Reported total allocated memory (MB): "
+  // // //             << total_memory_used / 1024.0 / 1024.0 << std::endl;
+  // // //   std::cout << "Reported internal fragmentation: "
+  // // //             << (total_memory_used - total_size) * 100.0 / total_size << "%"
+  // // //             << std::endl;
+  // // // }
 
-  double bpk = total_size * 8.0 / total_keys_added;
-  std::cout << "Bits/key stored: " << bpk << std::endl;
+  // // // double bpk = total_size * 8.0 / total_keys_added;
+  // // // std::cout << "Bits/key stored: " << bpk << std::endl;
 #ifdef PREDICT_FP_RATE
-  std::cout << "Predicted FP rate %: "
-            << 100.0 * (weighted_predicted_fp_rate / total_keys_added)
-            << std::endl;
+  // // // std::cout << "Predicted FP rate %: "
+  // // //           << 100.0 * (weighted_predicted_fp_rate / total_keys_added)
+  // // //           << std::endl;
 #endif
   if (!FLAGS_quick && !FLAGS_best_case) {
-    double tolerable_rate = std::pow(2.0, -(bpk - 1.0) / (1.4 + bpk / 50.0));
-    std::cout << "Best possible FP rate %: " << 100.0 * std::pow(2.0, -bpk)
-              << std::endl;
-    std::cout << "Tolerable FP rate %: " << 100.0 * tolerable_rate << std::endl;
+    // // // double tolerable_rate = std::pow(2.0, -(bpk - 1.0) / (1.4 + bpk / 50.0));
+    // // // std::cout << "Best possible FP rate %: " << 100.0 * std::pow(2.0, -bpk)
+    // // //           << std::endl;
+    // // // std::cout << "Tolerable FP rate %: " << 100.0 * tolerable_rate << std::endl;
 
-    std::cout << "----------------------------" << std::endl;
-    std::cout << "Verifying..." << std::endl;
+    // // // std::cout << "----------------------------" << std::endl;
+    // // // std::cout << "Verifying..." << std::endl;
 
     uint32_t outside_q_per_f =
         static_cast<uint32_t>(m_queries_ * 1000000 / infos_.size());
-    uint64_t fps = 0;
+    // // uint64_t fps = 0;
+    uint64_t fps1 = 0;
     for (uint32_t i = 0; i < infos_.size(); ++i) {
       FilterInfo &info = infos_[i];
-      for (uint32_t j = 0; j < info.keys_added_; ++j) {
-        if (FLAGS_use_plain_table_bloom) {
-          uint32_t hash = GetSliceHash(kms_[0].Get(info.filter_id_, j));
-          ALWAYS_ASSERT(info.plain_table_bloom_->MayContainHash(hash));
-        } else {
-          ALWAYS_ASSERT(
-              info.reader_->MayMatch(kms_[0].Get(info.filter_id_, j)));
-        }
-      }
-      for (uint32_t j = 0; j < outside_q_per_f; ++j) {
-        if (FLAGS_use_plain_table_bloom) {
-          uint32_t hash =
-              GetSliceHash(kms_[0].Get(info.filter_id_, j | 0x80000000));
-          fps += info.plain_table_bloom_->MayContainHash(hash);
-        } else {
-          fps += info.reader_->MayMatch(
-              kms_[0].Get(info.filter_id_, j | 0x80000000));
-        }
-      }
-    }
-    std::cout << " No FNs :)" << std::endl;
-    double prelim_rate = double(fps) / outside_q_per_f / infos_.size();
-    std::cout << " Prelim FP rate %: " << (100.0 * prelim_rate) << std::endl;
 
-    if (!FLAGS_allow_bad_fp_rate) {
-      ALWAYS_ASSERT(prelim_rate < tolerable_rate);
+      std::vector<std::string> in_keys(info.keys_added_);
+      for (uint32_t j = 0; j < info.keys_added_; ++j) {
+        Slice in_key = kms_[0].Get(info.filter_id_, j);
+        in_keys[j] = std::string(in_key.data(), in_key.size());
+        }
+
+      ROCKSDB_NAMESPACE::StopWatchNano in_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
+      for (uint32_t j = 0; j < info.keys_added_; ++j) {
+        // // ALWAYS_ASSERT(info.reader_->MayMatch(kms_[0].Get(info.filter_id_, j)));
+        ALWAYS_ASSERT(info.reader_->MayMatch(in_keys[j]));
+      }
+      double in_ns = double(in_timer.ElapsedNanos()) / info.keys_added_;
+      // // std::cout << "BUILD:" << finish_ns << '\n';
+      std::cout << "IN Query:" << in_ns << '\n';
+
+      std::vector<std::string> out_keys(outside_q_per_f);
+      std::vector<Slice> out_keys_slice(outside_q_per_f);
+      for (uint32_t j = 0; j < outside_q_per_f; ++j) {
+        Slice out_key = kms_[0].Get(info.filter_id_, j | 0x80000000);
+        out_keys[j] = std::string(out_key.data(), out_key.size());
+        out_keys_slice[j] = out_keys[j];
+        }
+
+      // =================================== CHECK OUT KEYS ============================================
+      ROCKSDB_NAMESPACE::StopWatchNano out_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
+      g_num_double_hash = 0;
+      num_checks = 0;
+      for (uint32_t j = 0; j < outside_q_per_f; ++j) {
+        // // fps += info.reader_->MayMatch(kms_[0].Get(info.filter_id_, j | 0x80000000));
+        fps1 += info.reader_->MayMatch(out_keys_slice[j]);
+        // info.reader_->MayMatch(out_keys[j]);
+      }
+      double out_ns = double(out_timer.ElapsedNanos()) / outside_q_per_f;
+      double avg_num_checks = (double)num_checks / outside_q_per_f;
+      double avs_double_hash = (double)g_num_double_hash / num_checks;
+      std::cout << "OUT Query:" << out_ns << ", num_checks:" << num_checks << ", avg_num_checks:" << avg_num_checks << ", avs_double_hash:" << avs_double_hash << '\n';
     }
-  }
+
+    // // // std::cout << " No FNs :)" << std::endl;
+    // // // double prelim_rate = double(fps) / outside_q_per_f / infos_.size();
+    // // // std::cout << " Prelim FP rate %: " << (100.0 * prelim_rate) << std::endl;
+
+    double prelim_rate1 = double(fps1) / outside_q_per_f / infos_.size();
+    std::cout << " Prelim FP rate1 %: " << (100.0 * prelim_rate1) << std::endl;
+
+    // // // if (!FLAGS_allow_bad_fp_rate) {
+    // // //   ALWAYS_ASSERT(prelim_rate < tolerable_rate);
+    // // // }
+    }
+
+  // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  return;
+
+
 
   std::cout << "----------------------------" << std::endl;
   std::cout << "Mixed inside/outside queries..." << std::endl;
@@ -780,6 +821,20 @@ std::pair<Policy, int> CreateFilterPolicy() {
   return {policy, bloom_idx};
 }
 
+extern bool g_rocksdb_use_avx2;
+
+extern bool g_speedb_use_test_bloom;
+extern bool g_speedb_use_avx2;
+extern bool g_speedb_prefetch_on_query;
+extern bool g_speedb_use_double_hash;
+
+bool g_rocksdb_use_avx2 = true;
+
+bool g_speedb_use_test_bloom = true;
+bool g_speedb_use_avx2 = true;
+bool g_speedb_prefetch_on_query = true;
+bool g_speedb_use_double_hash = true;
+
 int main(int argc, char **argv) {
   ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   SetUsageMessage(std::string("\nUSAGE:\n") + std::string(argv[0]) +
@@ -823,12 +878,48 @@ int main(int argc, char **argv) {
     throw std::runtime_error("-vary_key_count_ratio must be >= 0.0 and <= 1.0");
   } else {
     {
+      FLAGS_impl = "rocksdb.internal.FastLocalBloomFilter:23.4";
+      num_checks = 0;
+      for (auto use_avx2: {false}) {
+        g_rocksdb_use_avx2 = use_avx2;
+        std::cout << std::boolalpha << "\nROCKSDB(" << FLAGS_impl << ") -\n";
+                  // // << "AVX2:" << g_rocksdb_use_avx2 << '\n'
+                  // // << '\n';
       auto [policy, bloom_idx] = CreateFilterPolicy();
       ROCKSDB_NAMESPACE::FilterBench b(policy, bloom_idx);
       for (uint32_t i = 0; i < FLAGS_runs; ++i) {
         b.Go();
         FLAGS_seed += 100;
         b.random_.Seed(FLAGS_seed);
+        }
+      }
+    }
+
+    FLAGS_impl = "spdb.PairedBloomFilter:23.4";
+    for (auto use_test_bloom: {true}) {
+      for (auto use_avx2: {false}) {
+        for (auto prefetch_on_query: {true}) {
+          for (auto use_double_hash: {true}) {
+            g_speedb_use_test_bloom = use_test_bloom;
+            g_speedb_use_avx2 = use_avx2;
+            g_speedb_prefetch_on_query = prefetch_on_query;        
+            g_speedb_use_double_hash = use_double_hash;    
+            std::cout << std::boolalpha << "\nSPEEDB(" << FLAGS_impl << ") - \n"
+                      << "Middle Optimization:" << g_speedb_use_test_bloom << '\n'
+                      << "AVX2:" << g_speedb_use_avx2 << '\n'
+                      << "Prefetch-on-query:" << g_speedb_prefetch_on_query << '\n'
+                      << "Double Hash:" << g_speedb_use_double_hash << '\n'
+                      << '\n';
+            num_checks = 0;
+            auto [policy, bloom_idx] = CreateFilterPolicy();
+            ROCKSDB_NAMESPACE::FilterBench b(policy, bloom_idx);
+            for (uint32_t i = 0; i < FLAGS_runs; ++i) {
+              b.Go();
+              FLAGS_seed += 100;
+              b.random_.Seed(FLAGS_seed);
+            }
+          }
+        }
       }
     }
   }

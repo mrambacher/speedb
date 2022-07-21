@@ -17,9 +17,13 @@
 #include "rocksdb/slice.h"
 #include "util/hash.h"
 
+extern bool g_rocksdb_use_avx2;
+
 #ifdef HAVE_AVX2
 #include <immintrin.h>
 #endif
+
+extern int num_checks;
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -154,6 +158,9 @@ class FastLocalBloomImpl {
   }
 
   static inline int ChooseNumProbes(int millibits_per_key) {
+    // // // FORCE num probes to be the same as Speedb
+    return 16;
+
     // Since this implementation can (with AVX2) make up to 8 probes
     // for the same cost, we pick the most accurate num_probes, based
     // on actual tests of the implementation. Note that for higher
@@ -327,10 +334,12 @@ class FastLocalBloomImpl {
   }
 #endif  // HAVE_AVX2
 
+
   static inline bool HashMayMatchPrepared(uint32_t h2, int num_probes,
                                           const char *data_at_cache_line) {
     uint32_t h = h2;
 #ifdef HAVE_AVX2
+    if (g_rocksdb_use_avx2) {    
     int rem_probes = num_probes;
 
     // NOTE: For better performance for num_probes in {1, 2, 9, 10, 17, 18,
@@ -363,8 +372,20 @@ class FastLocalBloomImpl {
       h *= 0xab25f4c1;
       rem_probes -= 8;
     }
+    } else {
+      for (int i = 0; i < num_probes; ++i, h *= uint32_t{0x9e3779b9}) {
+        ++num_checks;
+        // 9-bit address within 512 bit cache line
+        int bitpos = h >> (32 - 9);
+        if ((data_at_cache_line[bitpos >> 3] & (char(1) << (bitpos & 7))) == 0) {
+          return false;
+        }
+      }
+      return true;
+    }
 #else
     for (int i = 0; i < num_probes; ++i, h *= uint32_t{0x9e3779b9}) {
+      ++num_checks;
       // 9-bit address within 512 bit cache line
       int bitpos = h >> (32 - 9);
       if ((data_at_cache_line[bitpos >> 3] & (char(1) << (bitpos & 7))) == 0) {
