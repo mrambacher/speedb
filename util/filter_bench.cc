@@ -427,7 +427,8 @@ void FilterBench::Go() {
   // // // uint64_t elapsed_nanos = timer.ElapsedNanos();
   // // // double ns = double(elapsed_nanos) / total_keys_added;
   // // // std::cout << "Build avg ns/key: " << ns << std::endl;
-  std::cout << "Number of filters: " << infos_.size() << std::endl;
+  // // std::cout << "Number of filters: " << infos_.size() << std::endl;
+  std::cout << ", Num-Filters:" << infos_.size() << std::endl;
   // // // std::cout << "Total size (MB): " << total_size / 1024.0 / 1024.0 << std::endl;
   // // // if (total_memory_used > 0) {
   // // //   std::cout << "Reported total allocated memory (MB): "
@@ -473,7 +474,7 @@ void FilterBench::Go() {
       }
       double in_ns = double(in_timer.ElapsedNanos()) / info.keys_added_;
       // // std::cout << "BUILD:" << finish_ns << '\n';
-      std::cout << "IN Query:" << in_ns << '\n';
+      std::cout << "IN Query:" << in_ns;
 
       std::vector<std::string> out_keys(outside_q_per_f);
       std::vector<Slice> out_keys_slice(outside_q_per_f);
@@ -495,15 +496,19 @@ void FilterBench::Go() {
       double out_ns = double(out_timer.ElapsedNanos()) / outside_q_per_f;
       double avg_num_checks = (double)num_checks / outside_q_per_f;
       double avs_double_hash = (double)g_num_double_hash / num_checks;
-      std::cout << "OUT Query:" << out_ns << ", num_checks:" << num_checks << ", avg_num_checks:" << avg_num_checks << ", avs_double_hash:" << avs_double_hash << '\n';
+      std::cout << ",    OUT Query:" << out_ns << '\n';
+
+      double prelim_rate1 = double(fps1) / outside_q_per_f / infos_.size();
+      uint32_t fpr = (100 / (100.0 * prelim_rate1));
+      std::cout << "num_checks:" << num_checks << ", avg_num_checks:" << avg_num_checks << ", avs_double_hash:" << (100 * avs_double_hash) << "%,   FPR:" << fpr << '\n';
     }
 
     // // // std::cout << " No FNs :)" << std::endl;
     // // // double prelim_rate = double(fps) / outside_q_per_f / infos_.size();
     // // // std::cout << " Prelim FP rate %: " << (100.0 * prelim_rate) << std::endl;
 
-    double prelim_rate1 = double(fps1) / outside_q_per_f / infos_.size();
-    std::cout << " Prelim FP rate1 %: " << (100.0 * prelim_rate1) << std::endl;
+    // // double prelim_rate1 = double(fps1) / outside_q_per_f / infos_.size();
+    // // // std::cout << " Prelim FP rate1 %: " << (100.0 * prelim_rate1) << std::endl;
 
     // // // if (!FLAGS_allow_bad_fp_rate) {
     // // //   ALWAYS_ASSERT(prelim_rate < tolerable_rate);
@@ -822,15 +827,17 @@ std::pair<Policy, int> CreateFilterPolicy() {
 }
 
 extern bool g_rocksdb_use_avx2;
+extern bool g_rocksdb_force_16_probes;
 
-extern bool g_speedb_use_test_bloom;
+extern bool g_speedb_use_middle_optimization;
 extern bool g_speedb_use_avx2;
 extern bool g_speedb_prefetch_on_query;
 extern bool g_speedb_use_double_hash;
 
 bool g_rocksdb_use_avx2 = true;
+bool g_rocksdb_force_16_probes = true;
 
-bool g_speedb_use_test_bloom = true;
+bool g_speedb_use_middle_optimization = true;
 bool g_speedb_use_avx2 = true;
 bool g_speedb_prefetch_on_query = true;
 bool g_speedb_use_double_hash = true;
@@ -877,39 +884,43 @@ int main(int argc, char **argv) {
              FLAGS_vary_key_count_ratio > 1.0) {
     throw std::runtime_error("-vary_key_count_ratio must be >= 0.0 and <= 1.0");
   } else {
+#if 0    
     {
       FLAGS_impl = "rocksdb.internal.FastLocalBloomFilter:23.4";
-      num_checks = 0;
       for (auto use_avx2: {false}) {
-        g_rocksdb_use_avx2 = use_avx2;
-        std::cout << std::boolalpha << "\nROCKSDB(" << FLAGS_impl << ") -\n";
-                  // // << "AVX2:" << g_rocksdb_use_avx2 << '\n'
-                  // // << '\n';
-      auto [policy, bloom_idx] = CreateFilterPolicy();
-      ROCKSDB_NAMESPACE::FilterBench b(policy, bloom_idx);
-      for (uint32_t i = 0; i < FLAGS_runs; ++i) {
-        b.Go();
-        FLAGS_seed += 100;
-        b.random_.Seed(FLAGS_seed);
-        }
+        for (auto force_16_probes: {false, true}) {
+          num_checks = 0;
+          g_rocksdb_use_avx2 = use_avx2;
+          g_rocksdb_force_16_probes = force_16_probes;
+          std::cout << std::boolalpha << "\nROCKSDB - " 
+                    << "AVX2:" << g_rocksdb_use_avx2 
+                    << ", 16-Probes:" << g_rocksdb_force_16_probes;
+          auto [policy, bloom_idx] = CreateFilterPolicy();
+          ROCKSDB_NAMESPACE::FilterBench b(policy, bloom_idx);
+          for (uint32_t i = 0; i < FLAGS_runs; ++i) {
+            b.Go();
+            FLAGS_seed += 100;
+            b.random_.Seed(FLAGS_seed);
+            }
+          }
       }
     }
+#endif
 
     FLAGS_impl = "spdb.PairedBloomFilter:23.4";
-    for (auto use_test_bloom: {true}) {
+    for (auto use_middle_optimization: {false}) {
       for (auto use_avx2: {false}) {
         for (auto prefetch_on_query: {true}) {
           for (auto use_double_hash: {true}) {
-            g_speedb_use_test_bloom = use_test_bloom;
+            g_speedb_use_middle_optimization = use_middle_optimization;
             g_speedb_use_avx2 = use_avx2;
             g_speedb_prefetch_on_query = prefetch_on_query;        
             g_speedb_use_double_hash = use_double_hash;    
-            std::cout << std::boolalpha << "\nSPEEDB(" << FLAGS_impl << ") - \n"
-                      << "Middle Optimization:" << g_speedb_use_test_bloom << '\n'
-                      << "AVX2:" << g_speedb_use_avx2 << '\n'
-                      << "Prefetch-on-query:" << g_speedb_prefetch_on_query << '\n'
-                      << "Double Hash:" << g_speedb_use_double_hash << '\n'
-                      << '\n';
+            std::cout << std::boolalpha << "\nSPEEDB - "
+                      << "Middle Optimization:" << g_speedb_use_middle_optimization
+                      << ", AVX2:" << g_speedb_use_avx2
+                      << ", Prefetch:" << g_speedb_prefetch_on_query
+                      << ", Double-Hash:" << g_speedb_use_double_hash;
             num_checks = 0;
             auto [policy, bloom_idx] = CreateFilterPolicy();
             ROCKSDB_NAMESPACE::FilterBench b(policy, bloom_idx);

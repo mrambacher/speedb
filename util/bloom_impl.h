@@ -18,6 +18,7 @@
 #include "util/hash.h"
 
 extern bool g_rocksdb_use_avx2;
+extern bool g_rocksdb_force_16_probes;
 
 #ifdef HAVE_AVX2
 #include <immintrin.h>
@@ -158,9 +159,10 @@ class FastLocalBloomImpl {
   }
 
   static inline int ChooseNumProbes(int millibits_per_key) {
-    // // // FORCE num probes to be the same as Speedb
-    return 16;
-
+    if (g_rocksdb_force_16_probes) {
+      // // // FORCE num probes to be the same as Speedb
+      return 16;
+    }
     // Since this implementation can (with AVX2) make up to 8 probes
     // for the same cost, we pick the most accurate num_probes, based
     // on actual tests of the implementation. Note that for higher
