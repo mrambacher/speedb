@@ -911,7 +911,25 @@ double ColumnFamilyData::CalculateWriteDelayIncrement() {
                             mutable_cf_options_.level0_slowdown_writes_trigger;
   const double l0_increment = extra_l0_ssts < 0 ? 0 : pow(1.2, extra_l0_ssts);
 
-  return std::max(l0_increment, memtable_increment);
+  auto ret = std::max(l0_increment, memtable_increment);
+
+  auto soft_limit = mutable_cf_options_.soft_pending_compaction_bytes_limit;
+  if (soft_limit > 0) {
+    auto hard_limit = mutable_cf_options_.hard_pending_compaction_bytes_limit;
+    auto cur_value = vstorage->estimated_compaction_needed_bytes();
+    if (cur_value > soft_limit) {
+      double delay = 0;
+      if (cur_value < hard_limit) {
+        auto extra_bytes = cur_value - soft_limit;
+        // this will give values between 1 & 1.071^100 =~ 952
+        delay = pow(1.071, (extra_bytes * 100.0 / (hard_limit - soft_limit)));
+      } else {
+        delay = 1000;
+      }
+      if (delay > ret) ret = delay;
+    }
+  }
+  return ret;
 }
 
 WriteStallCondition ColumnFamilyData::DynamicRecalculateWriteStallConditions(
