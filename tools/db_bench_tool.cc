@@ -2975,7 +2975,9 @@ class Benchmark {
   }
 
   void DeleteDBs() {
-    db_.DeleteDBs();
+    if (db_.db != nullptr) {
+      db_.DeleteDBs();
+    }
     for (const DBWithColumnFamilies& dbwcf : multi_dbs_) {
       delete dbwcf.db;
     }
@@ -3449,7 +3451,7 @@ class Benchmark {
           }
           Options options = open_options_;
           for (size_t i = 0; i < multi_dbs_.size(); i++) {
-            delete multi_dbs_[i].db;
+            multi_dbs_[i].DeleteDBs();
             if (!open_options_.wal_dir.empty()) {
               options.wal_dir = GetPathForMultiple(open_options_.wal_dir, i);
             }
@@ -4590,7 +4592,13 @@ class Benchmark {
       }
 #endif  // ROCKSDB_LITE
     } else {
-      s = DB::Open(options, db_name, &db->db);
+      std::vector<ColumnFamilyDescriptor> column_families;
+      column_families.push_back(ColumnFamilyDescriptor(
+          kDefaultColumnFamilyName, ColumnFamilyOptions(options)));
+      s = DB::Open(options, db_name, column_families, &db->cfh, &db->db);
+      db->cfh.resize(1);
+      db->num_created = 1;
+      db->num_hot = 1;
     }
     if (FLAGS_report_open_timing) {
       std::cout << "OpenDb:     "
@@ -5475,6 +5483,10 @@ class Benchmark {
         thread->shared->read_rate_limiter->Request(1024, Env::IO_HIGH,
                                                    nullptr /* stats */,
                                                    RateLimiter::OpType::kRead);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
     }
 
@@ -5526,6 +5538,10 @@ class Benchmark {
           read % 256 == 255) {
         thread->shared->read_rate_limiter->Request(
             256, Env::IO_HIGH, nullptr /* stats */, RateLimiter::OpType::kRead);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
 
       thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, kRead);
@@ -5567,6 +5583,10 @@ class Benchmark {
         thread->shared->read_rate_limiter->Request(1024, Env::IO_HIGH,
                                                    nullptr /* stats */,
                                                    RateLimiter::OpType::kRead);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
     }
     delete iter;
@@ -5622,6 +5642,10 @@ class Benchmark {
       if (thread->shared->read_rate_limiter.get() != nullptr) {
         thread->shared->read_rate_limiter->Request(
             100, Env::IO_HIGH, nullptr /* stats */, RateLimiter::OpType::kRead);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
 
       thread->stats.FinishedOps(nullptr, db, 100, kRead);
@@ -5762,6 +5786,10 @@ class Benchmark {
           read % 256 == 255) {
         thread->shared->read_rate_limiter->Request(
             256, Env::IO_HIGH, nullptr /* stats */, RateLimiter::OpType::kRead);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
 
       thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, kRead);
@@ -5868,6 +5896,10 @@ class Benchmark {
         thread->shared->read_rate_limiter->Request(
             256 * entries_per_batch_, Env::IO_HIGH, nullptr /* stats */,
             RateLimiter::OpType::kRead);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
       thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kRead);
     }
@@ -6271,6 +6303,10 @@ class Benchmark {
         if (thread->shared->read_rate_limiter && (gets + seek) % 100 == 0) {
           thread->shared->read_rate_limiter->Request(100, Env::IO_HIGH,
                                                      nullptr /*stats*/);
+          // Set time at which last op finished to Now() to hide latency and
+          // sleep from rate limiter. Also, do the check once per batch, not
+          // once per write.
+          thread->stats.ResetLastOpTime();
         }
         thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, kRead);
       } else if (query_type == 1) {
@@ -6296,6 +6332,10 @@ class Benchmark {
         if (thread->shared->write_rate_limiter && puts % 100 == 0) {
           thread->shared->write_rate_limiter->Request(100, Env::IO_HIGH,
                                                       nullptr /*stats*/);
+          // Set time at which last op finished to Now() to hide latency and
+          // sleep from rate limiter. Also, do the check once per batch, not
+          // once per write.
+          thread->stats.ResetLastOpTime();
         }
         thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, kWrite);
       } else if (query_type == 2) {
@@ -6379,6 +6419,7 @@ class Benchmark {
     int64_t found = 0;
     int64_t bytes = 0;
     ReadOptions options = read_options_;
+    int64_t key_rand = 0;
     std::unique_ptr<char[]> ts_guard;
     Slice ts;
     if (user_timestamp_size_ > 0) {
@@ -6409,7 +6450,9 @@ class Benchmark {
     Duration duration(FLAGS_duration, reads_);
     char value_buffer[256];
     while (!duration.Done(1)) {
-      int64_t seek_pos = thread->rand.Next() % FLAGS_num;
+      key_rand = GetRandomKey(&thread->rand);
+      DBWithColumnFamilies* db_with_cfh = SelectDBWithCfh(key_rand);
+      int64_t seek_pos = key_rand;
       GenerateKeyFromIntForSeek(static_cast<uint64_t>(seek_pos), FLAGS_num,
                                 &key);
       if (FLAGS_max_scan_distance != 0) {
@@ -6431,18 +6474,15 @@ class Benchmark {
       // Pick a Iterator to use
       uint64_t db_idx_to_use =
           (db_.db == nullptr)
-              ? (uint64_t{thread->rand.Next()} % multi_dbs_.size())
+              ? (static_cast<uint64_t>(key_rand) % multi_dbs_.size())
               : 0;
       std::unique_ptr<Iterator> single_iter;
       Iterator* iter_to_use;
       if (FLAGS_use_tailing_iterator) {
         iter_to_use = tailing_iters[db_idx_to_use];
       } else {
-        if (db_.db != nullptr) {
-          single_iter.reset(db_.db->NewIterator(options));
-        } else {
-          single_iter.reset(multi_dbs_[db_idx_to_use].db->NewIterator(options));
-        }
+        single_iter.reset(db_with_cfh->db->NewIterator(
+            options, db_with_cfh->GetCfh(key_rand)));
         iter_to_use = single_iter.get();
       }
 
@@ -6471,6 +6511,10 @@ class Benchmark {
           read % 256 == 255) {
         thread->shared->read_rate_limiter->Request(
             256, Env::IO_HIGH, nullptr /* stats */, RateLimiter::OpType::kRead);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
 
       thread->stats.FinishedOps(&db_, db_.db, 1, kSeek);
@@ -6649,6 +6693,10 @@ class Benchmark {
         write_rate_limiter->Request(
             key.size() + val.size(), Env::IO_HIGH,
             nullptr /* stats */, RateLimiter::OpType::kWrite);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
     }
     thread->stats.AddBytes(bytes);
@@ -6894,6 +6942,7 @@ class Benchmark {
     ReadOptions options = read_options_;
     RandomGenerator gen;
     std::string value;
+    int64_t key_rand = 0;
     int64_t found = 0;
     int get_weight = 0;
     int put_weight = 0;
@@ -6911,8 +6960,10 @@ class Benchmark {
 
     // the number of iterations is the larger of read_ or write_
     while (!duration.Done(1)) {
-      DB* db = SelectDB(thread);
-      GenerateKeyFromInt(thread->rand.Next() % FLAGS_num, FLAGS_num, &key);
+      key_rand = GetRandomKey(&thread->rand);
+      DBWithColumnFamilies* db_with_cfh = SelectDBWithCfh(key_rand);
+      DB* db = db_with_cfh->db;
+      GenerateKeyFromInt(key_rand, FLAGS_num, &key);
       if (get_weight == 0 && put_weight == 0) {
         // one batch completed, reinitialize for next batch
         get_weight = FLAGS_readwritepercent;
@@ -6926,7 +6977,7 @@ class Benchmark {
                                                     ts_guard.get());
           options.timestamp = &ts;
         }
-        Status s = db->Get(options, key, &value);
+        Status s = db->Get(options, db_with_cfh->GetCfh(key_rand), key, &value);
         if (!s.ok() && !s.IsNotFound()) {
           fprintf(stderr, "get error: %s\n", s.ToString().c_str());
           // we continue after error rather than exiting so that we can
@@ -6936,16 +6987,18 @@ class Benchmark {
         }
         get_weight--;
         reads_done++;
-        thread->stats.FinishedOps(nullptr, db, 1, kRead);
+        thread->stats.FinishedOps(db_with_cfh, db, 1, kRead);
       } else  if (put_weight > 0) {
         // then do all the corresponding number of puts
         // for all the gets we have done earlier
         Status s;
         if (user_timestamp_size_ > 0) {
           Slice ts = mock_app_clock_->Allocate(ts_guard.get());
-          s = db->Put(write_options_, key, ts, gen.Generate());
+          s = db->Put(write_options_, db_with_cfh->GetCfh(key_rand), key, ts,
+                      gen.Generate());
         } else {
-          s = db->Put(write_options_, key, gen.Generate());
+          s = db->Put(write_options_, db_with_cfh->GetCfh(key_rand), key,
+                      gen.Generate());
         }
         if (!s.ok()) {
           fprintf(stderr, "put error: %s\n", s.ToString().c_str());
@@ -6953,7 +7006,7 @@ class Benchmark {
         }
         put_weight--;
         writes_done++;
-        thread->stats.FinishedOps(nullptr, db, 1, kWrite);
+        thread->stats.FinishedOps(db_with_cfh, db, 1, kWrite);
       }
     }
     char msg[100];
@@ -7090,12 +7143,14 @@ class Benchmark {
         DB* db = SelectDB(thread);
         GenerateKeyFromInt(thread->rand.Next() % FLAGS_num, FLAGS_num, &key);
 
-        Slice ts;
+        Status s;
         if (user_timestamp_size_ > 0) {
-          ts = mock_app_clock_->Allocate(ts_guard.get());
-          write_options_.timestamp = &ts;
+          Slice ts = mock_app_clock_->Allocate(ts_guard.get());
+          s = db->Put(write_options_, key, ts, gen.Generate());
+        } else {
+          s = db->Put(write_options_, key, gen.Generate());
         }
-        Status s = db->Put(write_options_, key, gen.Generate());
+
         if (!s.ok()) {
           fprintf(stderr, "put error: %s\n", s.ToString().c_str());
           ErrorExit();
@@ -7158,6 +7213,10 @@ class Benchmark {
         thread->shared->write_rate_limiter->Request(
             key.size() + value.size(), Env::IO_HIGH, nullptr /*stats*/,
             RateLimiter::OpType::kWrite);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
 
       Slice val = gen.Generate();
@@ -7836,6 +7895,10 @@ class Benchmark {
       if (thread->shared->read_rate_limiter.get() != nullptr) {
         thread->shared->read_rate_limiter->Request(
             1, Env::IO_HIGH, nullptr /* stats */, RateLimiter::OpType::kRead);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
     }
     delete iter;
@@ -7908,6 +7971,10 @@ class Benchmark {
         write_rate_limiter->Request(
             key.size() + val.size(), Env::IO_HIGH,
             nullptr /* stats */, RateLimiter::OpType::kWrite);
+        // Set time at which last op finished to Now() to hide latency and
+        // sleep from rate limiter. Also, do the check once per batch, not
+        // once per write.
+        thread->stats.ResetLastOpTime();
       }
     }
   }
