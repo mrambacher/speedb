@@ -47,35 +47,46 @@ namespace ROCKSDB_NAMESPACE {
 ImmutableMemTableOptions::ImmutableMemTableOptions(
     const ImmutableOptions& ioptions,
     const MutableCFOptions& mutable_cf_options)
-    : arena_block_size(mutable_cf_options.arena_block_size),
-      memtable_prefix_bloom_bits(
-          static_cast<uint32_t>(
-              static_cast<double>(mutable_cf_options.write_buffer_size) *
-              mutable_cf_options.memtable_prefix_bloom_size_ratio) *
-          8u),
-      memtable_huge_page_size(mutable_cf_options.memtable_huge_page_size),
-      memtable_whole_key_filtering(
-          mutable_cf_options.memtable_whole_key_filtering),
+    : 
       inplace_update_support(ioptions.inplace_update_support),
-      inplace_update_num_locks(mutable_cf_options.inplace_update_num_locks),
       inplace_callback(ioptions.inplace_callback),
-      max_successive_merges(mutable_cf_options.max_successive_merges),
       statistics(ioptions.stats),
       merge_operator(ioptions.merge_operator.get()),
       info_log(ioptions.logger),
-      allow_data_in_errors(ioptions.allow_data_in_errors) {}
+      allow_data_in_errors(ioptions.allow_data_in_errors) {
+  SetMutableOptions(mutable_cf_options);        
+}
+
+void ImmutableMemTableOptions::SetMutableOptions(const MutableCFOptions& mutable_cf_options)
+{
+      arena_block_size = mutable_cf_options.arena_block_size;
+      memtable_prefix_bloom_bits = (static_cast<uint32_t>(
+              static_cast<double>(mutable_cf_options.write_buffer_size) *
+              mutable_cf_options.memtable_prefix_bloom_size_ratio) *
+              8u);
+      memtable_huge_page_size = mutable_cf_options.memtable_huge_page_size;
+      memtable_whole_key_filtering =
+          mutable_cf_options.memtable_whole_key_filtering;
+      inplace_update_num_locks = mutable_cf_options.inplace_update_num_locks;
+      max_successive_merges = mutable_cf_options.max_successive_merges;
+}
 
 MemTable::MemTable(const InternalKeyComparator& cmp,
                    const ImmutableOptions& ioptions,
                    const MutableCFOptions& mutable_cf_options,
                    WriteBufferManager* write_buffer_manager,
                    SequenceNumber latest_seq, uint32_t column_family_id,
-                   bool pending)
+                   bool active)
     : comparator_(cmp),
       moptions_(ioptions, mutable_cf_options),
       refs_(0),
-      kArenaBlockSize(OptimizeBlockSize(moptions_.arena_block_size)),
-      mem_tracker_(write_buffer_manager, pending),
+      arena_block_size_(mutable_cf_options.arena_block_size),
+      mem_tracker_(write_buffer_manager, 
+                  (write_buffer_manager != nullptr &&
+                  (write_buffer_manager->enabled() ||
+                  write_buffer_manager->cost_to_cache()))
+                 ? active
+                 : false),
       arena_(moptions_.arena_block_size,
              (write_buffer_manager != nullptr &&
               (write_buffer_manager->enabled() ||
@@ -98,6 +109,8 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
       flush_completed_(false),
       file_number_(0),
       first_seqno_(0),
+      earliest_seqno_(latest_seq),
+      creation_seq_(latest_seq),
       mem_next_logfile_number_(0),
       min_prep_log_referenced_(0),
       locks_(moptions_.inplace_update_support
@@ -111,18 +124,8 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
       oldest_key_time_(std::numeric_limits<uint64_t>::max()),
       atomic_flush_seqno_(kMaxSequenceNumber),
       approximate_memory_usage_(0) {
-  SetInitialSeq(latest_seq);
-  UpdateFlushState();
-  // something went wrong if we need to flush before inserting anything
-  assert(!ShouldScheduleFlush());
-
-  // use bloom_filter_ for both whole key and prefix bloom filter
-  if ((prefix_extractor_ || moptions_.memtable_whole_key_filtering) &&
-      moptions_.memtable_prefix_bloom_bits > 0) {
-    bloom_filter_.reset(
-        new DynamicBloom(&arena_, moptions_.memtable_prefix_bloom_bits,
-                         6 /* hard coded 6 probes */,
-                         moptions_.memtable_huge_page_size, ioptions.logger));
+  if (active) {
+    Activate(latest_seq, mutable_cf_options);    
   }
 }
 
@@ -131,15 +134,28 @@ MemTable::~MemTable() {
   assert(refs_ == 0);
 }
 
-void MemTable::SetInitialSeq(SequenceNumber sn) {
+
+
+void MemTable::Activate(SequenceNumber sn, const MutableCFOptions& mutable_cf_options) {
+  assert(!active_);
+  active_ = true;
   earliest_seqno_ = sn;
   creation_seq_ = sn;
-}
-
-void MemTable::Activate(SequenceNumber sn) {
-  SetInitialSeq(sn);
+  moptions_.SetMutableOptions(mutable_cf_options);
+  arena_block_size_ = OptimizeBlockSize(moptions_.arena_block_size);
   arena_.Activate();
-
+  write_buffer_size_ = mutable_cf_options.write_buffer_size;
+  UpdateFlushState();
+  // something went wrong if we need to flush before inserting anything
+  assert(!ShouldScheduleFlush());
+  // use bloom_filter_ for both whole key and prefix bloom filter
+  if ((prefix_extractor_ || moptions_.memtable_whole_key_filtering) &&
+      moptions_.memtable_prefix_bloom_bits > 0) {
+    bloom_filter_.reset(
+        new DynamicBloom(&arena_, moptions_.memtable_prefix_bloom_bits,
+                         6 /* hard coded 6 probes */,
+                         moptions_.memtable_huge_page_size, moptions_.info_log));
+  }  
 }
 
 size_t MemTable::ApproximateMemoryUsage() {
@@ -167,7 +183,7 @@ bool MemTable::ShouldFlushNow() {
   // buffer size. Thus we have to decide if we should over-allocate or
   // under-allocate.
   // This constant variable can be interpreted as: if we still have more than
-  // "kAllowOverAllocationRatio * kArenaBlockSize" space left, we'd try to over
+  // "kAllowOverAllocationRatio * arena_block_size_" space left, we'd try to over
   // allocate one more block.
   const double kAllowOverAllocationRatio = 0.6;
 
@@ -181,15 +197,15 @@ bool MemTable::ShouldFlushNow() {
 
   // if we can still allocate one more block without exceeding the
   // over-allocation ratio, then we should not flush.
-  if (allocated_memory + kArenaBlockSize <
-      write_buffer_size + kArenaBlockSize * kAllowOverAllocationRatio) {
+  if (allocated_memory + arena_block_size_ <
+      write_buffer_size + arena_block_size_ * kAllowOverAllocationRatio) {
     return false;
   }
 
   // if user keeps adding entries that exceeds write_buffer_size, we need to
   // flush earlier even though we still have much available memory left.
   if (allocated_memory >
-      write_buffer_size + kArenaBlockSize * kAllowOverAllocationRatio) {
+      write_buffer_size + arena_block_size_ * kAllowOverAllocationRatio) {
     return true;
   }
 
@@ -208,7 +224,7 @@ bool MemTable::ShouldFlushNow() {
   // bigger than AllocatedAndUnused()?
   //
   // The answer is: if the entry size is also bigger than 0.25 *
-  // kArenaBlockSize, a dedicated block will be allocated for it; otherwise
+  // arena_block_size_, a dedicated block will be allocated for it; otherwise
   // arena will anyway skip the AllocatedAndUnused() and allocate a new, empty
   // and regular block. In either case, we *overly* over-allocated.
   //
@@ -218,7 +234,7 @@ bool MemTable::ShouldFlushNow() {
   // NOTE: the average percentage of waste space of this approach can be counted
   // as: "arena block size * 0.25 / write buffer size". User who specify a small
   // write buffer size and/or big arena block size may suffer.
-  return arena_.AllocatedAndUnused() < kArenaBlockSize / 4;
+  return arena_.AllocatedAndUnused() < arena_block_size_ / 4;
 }
 
 void MemTable::UpdateFlushState() {

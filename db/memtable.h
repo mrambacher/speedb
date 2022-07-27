@@ -43,6 +43,7 @@ class SystemClock;
 struct ImmutableMemTableOptions {
   explicit ImmutableMemTableOptions(const ImmutableOptions& ioptions,
                                     const MutableCFOptions& mutable_cf_options);
+  void SetMutableOptions(const MutableCFOptions& mutable_cf_options);
   size_t arena_block_size;
   uint32_t memtable_prefix_bloom_bits;
   size_t memtable_huge_page_size;
@@ -108,7 +109,7 @@ class MemTable {
                     const MutableCFOptions& mutable_cf_options,
                     WriteBufferManager* write_buffer_manager,
                     SequenceNumber earliest_seq, uint32_t column_family_id,
-                    bool pending = false);
+                    bool active = true);
   // No copying allowed
   MemTable(const MemTable&) = delete;
   MemTable& operator=(const MemTable&) = delete;
@@ -410,7 +411,7 @@ class MemTable {
   // Sets the initial sequence number for lazy initialization of the memtable 
   // and activate mem_tracker_ if needed
   // NOTE: should only be called once before any other operation on the memtable
-  void Activate(SequenceNumber sn);
+  void Activate(SequenceNumber sn, const MutableCFOptions& mutable_cf_options);
 
   // Returns the next active logfile number when this memtable is about to
   // be flushed to storage
@@ -488,6 +489,8 @@ class MemTable {
 
   uint64_t GetID() const { return id_; }
 
+  void UpdateMutableOptions(const MutableCFOptions& mutable_cf_options);
+
   void SetFlushCompleted(bool completed) { flush_completed_ = completed; }
 
   uint64_t GetFileNumber() const { return file_number_; }
@@ -519,9 +522,9 @@ class MemTable {
   friend class MemTableList;
 
   KeyComparator comparator_;
-  const ImmutableMemTableOptions moptions_;
+  ImmutableMemTableOptions moptions_;
   int refs_;
-  const size_t kArenaBlockSize;
+  size_t arena_block_size_;
   AllocTracker mem_tracker_;
   ConcurrentArena arena_;
   std::unique_ptr<MemTableRep> table_;
@@ -592,6 +595,8 @@ class MemTable {
   // keep track of memory usage in table_, arena_, and range_del_table_.
   // Gets refreshed inside `ApproximateMemoryUsage()` or `ShouldFlushNow`
   std::atomic<uint64_t> approximate_memory_usage_;
+
+  bool active_ = false;
 
 #ifndef ROCKSDB_LITE
   // Flush job info of the current memtable.
