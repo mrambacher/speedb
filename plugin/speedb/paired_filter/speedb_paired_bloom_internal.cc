@@ -189,8 +189,7 @@ inline void BuildBlock::SetInBatchBlockIdxOfPair(
 }
 
 
-inline int GetBitPosInBlockForHash(uint32_t hash, [[maybe_unused]] uint32_t set_idx) {
-if (g_speedb_use_avx2 == false) {
+inline int GetBitPosInBlockForHash(uint32_t hash, uint32_t set_idx) {
   int bitpos = 0;
 
   if (set_idx == 0) {
@@ -207,7 +206,6 @@ if (g_speedb_use_avx2 == false) {
     }
   }
   ++g_num_double_hash;
-}
 
   return kInBatchIdxNumBits +
         (static_cast<uint32_t>(KNumBitsInBlockBloom *
@@ -277,14 +275,26 @@ bool ReadBlock::AreAllBlockBloomBitsSet(uint32_t hash, uint32_t set_idx,
 // // // int s_bitpos_s[8];
 
 #ifdef HAVE_AVX2
-// // // void Print_m256i(const std::string& title, const __m256i & value) {
-// // //     fprintf(stderr, "%s", title.c_str());
-// // //     const size_t n = sizeof(__m256i) / sizeof(uint32_t);
-// // //     uint32_t buffer[n];
-// // //     _mm256_storeu_si256((__m256i*)buffer, value);
-// // //     for (auto i = 0U; i < n; i++)
-// // //       fprintf(stderr, "[%u] %#010x, ", i, buffer[i]);
+const __m256i mask_vec = _mm256_set1_epi32(0x007FC000);
+const __m256i max_bitpos_vec = _mm256_set1_epi32(7);
+const __m256i fast_range_vec = _mm256_set1_epi32(KNumBitsInBlockBloom);
+const __m256i num_idx_bits_vec = _mm256_set1_epi32(kInBatchIdxNumBits);
 
+// Powers of 32-bit golden ratio, mod 2**32.
+const __m256i multipliers =
+    _mm256_setr_epi32(0x00000001, 0x9e3779b9, 0xe35e67b1, 0x734297e9,
+                      0x35fbe861, 0xdeb7c719, 0x448b211, 0x3459b749);
+
+// // void Print_m256i([[maybe_unused]] const std::string& title, const __m256i & value) {
+// //     PRINTF("%s", title.c_str());
+// //     const size_t n = sizeof(__m256i) / sizeof(uint32_t);
+// //     uint32_t buffer[n];
+// //     _mm256_storeu_si256((__m256i*)buffer, value);
+// //     for (auto i = 0U; i < n; i++)
+// //       PRINTF("[%u] %#010x, ", i, buffer[i]);
+
+// //     PRINTF("\n");
+// // }
 // // //     fprintf(stderr, "\n");
 // // // }
 
@@ -298,11 +308,6 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
   // bloom filter testing code using AVX2.
   // See bloom_impl.h for more details
 
-  // Powers of 32-bit golden ratio, mod 2**32.
-  const __m256i multipliers =
-      _mm256_setr_epi32(0x00000001, 0x9e3779b9, 0xe35e67b1, 0x734297e9,
-                        0x35fbe861, 0xdeb7c719, 0x448b211, 0x3459b749);
-
   // // // auto orig_hash = hash;
   if (set_idx == 1) {
     assert(hash_set_size < HashSetsSeeds.size());
@@ -313,6 +318,8 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
   }
 
   for (;;) {
+    ++num_checks;
+
     // Eight copies of hash
     __m256i hash_vector = _mm256_set1_epi32(hash);
 
@@ -320,25 +327,61 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
     // associativity of multiplication.
     hash_vector = _mm256_mullo_epi32(hash_vector, multipliers);
 
-    // AVX2 code to calculate the equivalent of GetBitPosInBlockForHash() for up
-    // to 8 hashes
+    __m256i orig_hash_vector = hash_vector;
 
-    // Shift right the hashes by kBlockSizeNumBits
-    hash_vector = _mm256_srli_epi32(hash_vector, kBlockSizeNumBits);
+    if (set_idx == 0) {
+      // hash >> 23
+      hash_vector = _mm256_srli_epi32(hash_vector, 23);
+    } else {
+      // hash & mask (0x007FC000)
+      hash_vector = _mm256_and_si256(hash_vector, mask_vec);
+            
+      // hash >> 14
+      hash_vector = _mm256_srli_epi32(hash_vector, 14);
+    }
+    // // Print_m256i("Before check < 7", hash_vector);
 
-    // Multiplying by 505 => The result (lower 32 bits will be in the range
-    // 0-504 (in the 9 MSB bits).
-    __m256i fast_range_vec = _mm256_set1_epi32(KNumBitsInBlockBloom);
-    hash_vector = _mm256_mullo_epi32(hash_vector, fast_range_vec);
+    // // Find the bit positions that are < 7
+    __m256i smaller_than_7_vec = _mm256_cmpgt_epi32(max_bitpos_vec, hash_vector);
+    // // Print_m256i("smaller_than_7_vec", smaller_than_7_vec);
 
-    hash_vector = _mm256_srli_epi32(hash_vector, kNumBlockSizeBitsShiftBits);
+    if (_mm256_testz_si256(smaller_than_7_vec, smaller_than_7_vec) == false) {
+      ++g_num_double_hash;
 
-    // Add 7 to get the final bit position in the range 7 - 511 (In the 9 MSB
-    // bits)
-    __m256i num_idx_bits_vec = _mm256_set1_epi32(kInBatchIdxNumBits);
-    hash_vector = _mm256_add_epi32(hash_vector, num_idx_bits_vec);
+      // // PRINTF("One or more are < 7\n");
+
+      __m256i hash_vector_fast_range = orig_hash_vector;
+
+      if (set_idx == 0) {
+        // << 9
+        hash_vector_fast_range = _mm256_slli_epi32(orig_hash_vector, 9);        
+      }
+
+      // AVX2 code to calculate the equivalent of GetBitPosInBlockForHash1stPass() for up
+      // to 8 hashes
+
+      // Shift right the hashes by kBlockSizeNumBits
+      hash_vector_fast_range = _mm256_srli_epi32(hash_vector_fast_range, kBlockSizeNumBits);
+
+      // Multiplying by 505 => The result (lower 32 bits will be in the range
+      // 0-504 (in the 9 MSB bits).
+      hash_vector_fast_range = _mm256_mullo_epi32(hash_vector_fast_range, fast_range_vec);
+      hash_vector_fast_range = _mm256_srli_epi32(hash_vector_fast_range, kNumBlockSizeBitsShiftBits);
+
+      // Add 7 to get the final bit position in the range 7 - 511 (In the 9 MSB
+      // bits)
+      hash_vector_fast_range = _mm256_add_epi32(hash_vector_fast_range, num_idx_bits_vec);
+
+
+      hash_vector = _mm256_blendv_epi8(hash_vector, hash_vector_fast_range, smaller_than_7_vec);
+    } else {
+      // // PRINTF("All are >= 7\n");
+    }
+
+    // // Print_m256i("hash_vector Before << 23", hash_vector);
 
     hash_vector = _mm256_slli_epi32(hash_vector, kNumBlockSizeBitsShiftBits);
+    // // Print_m256i("hash_vector for CheckBitsPositionsInBloomBlock", hash_vector);
 
     auto [is_done, answer] = FastLocalBloomImpl::CheckBitsPositionsInBloomBlock(
         rem_probes, hash_vector, block_address_);

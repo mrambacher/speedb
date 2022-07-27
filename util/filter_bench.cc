@@ -470,8 +470,8 @@ void FilterBench::Go() {
       ROCKSDB_NAMESPACE::StopWatchNano in_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
       for (uint32_t j = 0; j < info.keys_added_; ++j) {
         // // ALWAYS_ASSERT(info.reader_->MayMatch(kms_[0].Get(info.filter_id_, j)));
-        // // // ALWAYS_ASSERT(info.reader_->MayMatch(in_keys[j]));
-        info.reader_->MayMatch(in_keys[j]);
+        ALWAYS_ASSERT(info.reader_->MayMatch(in_keys[j]));
+        // // info.reader_->MayMatch(in_keys[j]);
       }
       double in_ns = double(in_timer.ElapsedNanos()) / info.keys_added_;
       // // std::cout << "BUILD:" << finish_ns << '\n';
