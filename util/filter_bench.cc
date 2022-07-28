@@ -799,11 +799,15 @@ int main(int argc, char **argv) {
   } else {
     ROCKSDB_NAMESPACE::ConfigOptions config_options;
     config_options.ignore_unsupported_options = false;
+    std::string bits_str;
+    if (FLAGS_bits_per_key > 0) {
+      bits_str = ":" + ROCKSDB_NAMESPACE::ToString(FLAGS_bits_per_key);
+    }
     auto s = ROCKSDB_NAMESPACE::FilterPolicy::CreateFromString(
-        config_options, FLAGS_impl, &policy);
+        config_options, FLAGS_impl + bits_str, &policy);
     if (!s.ok() || !policy) {
-      fprintf(stderr, "Failed to create FilterPolicy[%s]: %s\n",
-              FLAGS_impl.c_str(), s.ToString().c_str());
+      fprintf(stderr, "Failed to create FilterPolicy[%s%s]: %s\n",
+              FLAGS_impl.c_str(), bits_str.c_str(), s.ToString().c_str());
       exit(-1);
     }
   }
