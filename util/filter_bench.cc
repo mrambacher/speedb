@@ -469,9 +469,7 @@ void FilterBench::Go() {
 
       ROCKSDB_NAMESPACE::StopWatchNano in_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
       for (uint32_t j = 0; j < info.keys_added_; ++j) {
-        // // ALWAYS_ASSERT(info.reader_->MayMatch(kms_[0].Get(info.filter_id_, j)));
         ALWAYS_ASSERT(info.reader_->MayMatch(in_keys[j]));
-        // // info.reader_->MayMatch(in_keys[j]);
       }
       double in_ns = double(in_timer.ElapsedNanos()) / info.keys_added_;
       // // std::cout << "BUILD:" << finish_ns << '\n';
@@ -498,12 +496,12 @@ void FilterBench::Go() {
       }
       double out_ns = double(out_timer.ElapsedNanos()) / outside_q_per_f;
       double avg_num_checks = (double)num_checks / outside_q_per_f;
-      double avs_double_hash = (double)g_num_double_hash / num_checks;
+      double avg_double_hash = (double)g_num_double_hash / num_checks;
       std::cout << ",    OUT Query:" << out_ns << '\n';
 
       double prelim_rate1 = double(fps1) / outside_q_per_f / infos_.size();
       uint32_t fpr = (100 / (100.0 * prelim_rate1));
-      std::cout << "num_checks:" << num_checks << ", avg_num_checks:" << avg_num_checks << ", avs_double_hash:" << (100 * avs_double_hash) << "%,   FPR:" << fpr << '\n';
+      std::cout << "num_checks:" << num_checks << ", avg_num_checks:" << avg_num_checks << ", avg_double_hash:" << (100 * avg_double_hash) << "%,   FPR:" << fpr << '\n';
 
       // // uint32_t sum = 0U;
       // // ROCKSDB_NAMESPACE::StopWatchNano mask_timer(ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
@@ -843,7 +841,7 @@ extern bool g_rocksdb_force_16_probes;
 extern bool g_speedb_use_avx2;
 extern bool g_speedb_prefetch_on_query;
 extern bool g_speedb_use_double_hash;
-extern bool g_speedb_return_after_1st;
+extern bool g_printf;
 
 bool g_rocksdb_use_avx2 = true;
 bool g_rocksdb_force_16_probes = true;
@@ -851,7 +849,7 @@ bool g_rocksdb_force_16_probes = true;
 bool g_speedb_use_avx2 = true;
 bool g_speedb_prefetch_on_query = true;
 bool g_speedb_use_double_hash = true;
-bool g_speedb_return_after_1st = true;
+bool g_printf = true;
 
 int main(int argc, char **argv) {
   ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();

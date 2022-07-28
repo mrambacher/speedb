@@ -19,11 +19,21 @@
 #include <stdio.h>
 extern bool g_speedb_use_avx2;
 extern bool g_speedb_prefetch_on_query;
-extern bool g_speedb_return_after_1st;
+extern bool g_printf;
 
 extern int num_checks;
 extern int g_num_double_hash;
 
+#define ENABLE_PRINTF (1)
+
+#if (ENABLE_PRINTF == 1)
+  #define PRINTF(args...) \
+  if (g_printf) {         \
+    printf(args);         \
+  }
+#else
+  #define PRINTF(...)
+#endif
 #ifdef HAVE_AVX2
 #include <immintrin.h>
 #endif
@@ -215,7 +225,6 @@ inline int GetBitPosInBlockForHash(uint32_t hash, uint32_t set_idx) {
 
 inline void BuildBlock::SetBlockBloomBits(uint32_t hash, uint32_t set_idx,
                                           size_t hash_set_size) {
-  assert(set_idx <= 1U);
   for (auto i = 0U; i < hash_set_size; ++i) {
     int bitpos = GetBitPosInBlockForHash(hash, set_idx);
     block_address_[bitpos >> 3] |= (char{1} << (bitpos & kInBatchIdxNumBits));
@@ -252,9 +261,7 @@ inline ReadBlock::ReadBlock(const char* data, uint32_t global_block_idx,
 }
 
 inline uint8_t ReadBlock::GetInBatchBlockIdxOfPair() const {
-  // // return static_cast<uint8_t>(*block_address_) & kInBatchIdxMask;
-  return 10;
-  return *block_address_;
+  return static_cast<uint8_t>(*block_address_) & kInBatchIdxMask;
 }
 
 bool ReadBlock::AreAllBlockBloomBitsSet(uint32_t hash, uint32_t set_idx,
@@ -295,8 +302,6 @@ const __m256i multipliers =
 
 // //     PRINTF("\n");
 // // }
-// // //     fprintf(stderr, "\n");
-// // // }
 
 bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
                                             size_t hash_set_size) const {
@@ -307,15 +312,6 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
   // NOTE: This code is an adaptation of the equivalent code for RocksDB's
   // bloom filter testing code using AVX2.
   // See bloom_impl.h for more details
-
-  // // // auto orig_hash = hash;
-  if (set_idx == 1) {
-    assert(hash_set_size < HashSetsSeeds.size());
-    hash *= HashSetsSeeds[hash_set_size];
-    // // // fprintf(stderr, "set_idx:%d, seed_multiplier:%#010x, orig_hash:%#010x, hash:%#010x\n", (int)set_idx, HashSetsSeeds[hash_set_size], orig_hash, hash);
-  } else {
-      // // // fprintf(stderr, "set_idx:%d, orig_hash:%#010x, hash:%#010x\n", (int)set_idx, orig_hash, hash);
-  }
 
   for (;;) {
     ++num_checks;
@@ -339,16 +335,12 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
       // hash >> 14
       hash_vector = _mm256_srli_epi32(hash_vector, 14);
     }
-    // // Print_m256i("Before check < 7", hash_vector);
 
     // // Find the bit positions that are < 7
     __m256i smaller_than_7_vec = _mm256_cmpgt_epi32(max_bitpos_vec, hash_vector);
-    // // Print_m256i("smaller_than_7_vec", smaller_than_7_vec);
 
     if (_mm256_testz_si256(smaller_than_7_vec, smaller_than_7_vec) == false) {
       ++g_num_double_hash;
-
-      // // PRINTF("One or more are < 7\n");
 
       __m256i hash_vector_fast_range = orig_hash_vector;
 
