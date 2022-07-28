@@ -87,7 +87,7 @@ DEFINE_string(impl, "0",
               "Select filter implementation. Without -use_plain_table_bloom:"
               "0 = legacy full Bloom filter, 1 = block-based Bloom filter, "
               "2 = format_version 5 Bloom filter, 3 = Ribbon128 filter, "
-              "name and options of the filter to use, "
+              "name and options of the filter to use.  With "
               "-use_plain_table_bloom: 0 = no locality, 1 = locality.");
 
 DEFINE_bool(net_includes_hashing, false,
@@ -343,7 +343,6 @@ void FilterBench::Go() {
 
   ROCKSDB_NAMESPACE::StopWatchNano timer(
       ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
-  uint64_t elapsed_nanos_finish = 0U;
 
   infos_.clear();
   while ((working_mem_size_mb == 0 || total_size < max_mem) &&
@@ -377,12 +376,8 @@ void FilterBench::Go() {
       for (uint32_t i = 0; i < keys_to_add; ++i) {
         builder->AddKey(kms_[0].Get(filter_id, i));
       }
-      ROCKSDB_NAMESPACE::StopWatchNano timer1(
-          ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
       info.filter_ =
           builder->Finish(&info.owner_, &info.filter_construction_status);
-      elapsed_nanos_finish = timer1.ElapsedNanos();
-
       if (info.filter_construction_status.ok()) {
         info.filter_construction_status =
             builder->MaybePostVerify(info.filter_);
@@ -419,9 +414,6 @@ void FilterBench::Go() {
   uint64_t elapsed_nanos = timer.ElapsedNanos();
   double ns = double(elapsed_nanos) / total_keys_added;
   std::cout << "Build avg ns/key: " << ns << std::endl;
-
-  double ns_finish = double(elapsed_nanos_finish) / total_keys_added;
-
   std::cout << "Number of filters: " << infos_.size() << std::endl;
   std::cout << "Total size (MB): " << total_size / 1024.0 / 1024.0 << std::endl;
   if (total_memory_used > 0) {
@@ -451,18 +443,8 @@ void FilterBench::Go() {
     uint32_t outside_q_per_f =
         static_cast<uint32_t>(m_queries_ * 1000000 / infos_.size());
     uint64_t fps = 0;
-
-    std::cout << '\n';
-    std::cout << "==================================================\n";
-    std::cout << "Build avg (FINISH) ns/key (" << total_keys_added
-              << " Keys): " << ns_finish << "\n";
-
     for (uint32_t i = 0; i < infos_.size(); ++i) {
       FilterInfo &info = infos_[i];
-
-      ROCKSDB_NAMESPACE::StopWatchNano query_in_filter_timer(
-          ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
-
       for (uint32_t j = 0; j < info.keys_added_; ++j) {
         if (FLAGS_use_plain_table_bloom) {
           uint32_t hash = GetSliceHash(kms_[0].Get(info.filter_id_, j));
@@ -472,18 +454,6 @@ void FilterBench::Go() {
               info.reader_->MayMatch(kms_[0].Get(info.filter_id_, j)));
         }
       }
-
-      // // // auto elapsed_nanos_in_filter_query =
-      // query_in_filter_timer.ElapsedNanos();
-      // // // double ns_in_filter_per_key =
-      // double(elapsed_nanos_in_filter_query) / (info.keys_added_ +
-      // outside_q_per_f);
-      // // // std::cout << "IN-FILTER MayMatch avg ns/key (" <<
-      // info.keys_added_ << " Keys): " << ns_in_filter_per_key << "\n";
-
-      ROCKSDB_NAMESPACE::StopWatchNano query_out_filter_timer(
-          ROCKSDB_NAMESPACE::SystemClock::Default().get(), true);
-
       for (uint32_t j = 0; j < outside_q_per_f; ++j) {
         if (FLAGS_use_plain_table_bloom) {
           uint32_t hash =
@@ -494,16 +464,7 @@ void FilterBench::Go() {
               kms_[0].Get(info.filter_id_, j | 0x80000000));
         }
       }
-
-      auto elapsed_nanos_out_filter_query =
-          query_out_filter_timer.ElapsedNanos();
-      double ns_out_filter_per_key =
-          double(elapsed_nanos_out_filter_query) / outside_q_per_f;
-      std::cout << "OUT-FILTER MayMatch avg ns/key (" << outside_q_per_f
-                << " Keys): " << ns_out_filter_per_key << "\n";
     }
-    std::cout << "==================================================\n\n";
-
     std::cout << " No FNs :)" << std::endl;
     double prelim_rate = double(fps) / outside_q_per_f / infos_.size();
     std::cout << " Prelim FP rate %: " << (100.0 * prelim_rate) << std::endl;
@@ -512,9 +473,6 @@ void FilterBench::Go() {
       ALWAYS_ASSERT(prelim_rate < tolerable_rate);
     }
   }
-
-  // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-  return;
 
   std::cout << "----------------------------" << std::endl;
   std::cout << "Mixed inside/outside queries..." << std::endl;

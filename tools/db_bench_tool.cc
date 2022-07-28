@@ -4346,14 +4346,20 @@ class Benchmark {
       if (FLAGS_cache_size) {
         table_options->block_cache = cache_;
       }
+      std::string bits_str;
+      if (FLAGS_bloom_bits > 0) {
+        bits_str = ":" + ROCKSDB_NAMESPACE::ToString(FLAGS_bloom_bits);
+      }
       if (!FLAGS_filter_uri.empty()) {
         ConfigOptions config_options;
         config_options.ignore_unsupported_options = false;
         Status s = FilterPolicy::CreateFromString(
-            config_options, FLAGS_filter_uri, &table_options->filter_policy);
+            config_options, FLAGS_filter_uri + bits_str,
+            &table_options->filter_policy);
         if (!s.ok()) {
-          fprintf(stderr, "failure creating filter policy[%s]: %s\n",
-                  FLAGS_filter_uri.c_str(), s.ToString().c_str());
+          fprintf(stderr, "failure creating filter policy[%s%s]: %s\n",
+                  FLAGS_filter_uri.c_str(), bits_str.c_str(),
+                  s.ToString().c_str());
           exit(1);
         }
       } else if (FLAGS_bloom_bits < 0) {
@@ -4364,8 +4370,7 @@ class Benchmark {
         // Use back-door way of enabling obsolete block-based Bloom
         Status s = FilterPolicy::CreateFromString(
             ConfigOptions(),
-            "rocksdb.internal.DeprecatedBlockBasedBloomFilter:" +
-                ROCKSDB_NAMESPACE::ToString(FLAGS_bloom_bits),
+            "rocksdb.internal.DeprecatedBlockBasedBloomFilter" + bits_str,
             &table_options->filter_policy);
         if (!s.ok()) {
           fprintf(stderr, "failure creating obsolete block-based filter: %s\n",

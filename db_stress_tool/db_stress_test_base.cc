@@ -34,35 +34,41 @@ std::shared_ptr<const FilterPolicy> CreateFilterPolicy() {
     ConfigOptions config_options;
     std::shared_ptr<const FilterPolicy> policy;
     config_options.ignore_unsupported_options = false;
-    Status s = FilterPolicy::CreateFromString(config_options, FLAGS_filter_uri,
-                                              &policy);
+    std::string bits_str;
+    if (FLAGS_bloom_bits > 0) {
+      bits_str = ":" + FormatDoubleParam(FLAGS_bloom_bits);
+    }
+    Status s = FilterPolicy::CreateFromString(
+        config_options, FLAGS_filter_uri + bits_str, &policy);
     if (!s.ok() || !policy) {
-      fprintf(stderr, "Cannot create filter policy(%s): %s\n",
-              FLAGS_filter_uri.c_str(), s.ToString().c_str());
+      fprintf(stderr, "Cannot create filter policy(%s%s): %s\n",
+              FLAGS_filter_uri.c_str(), bits_str.c_str(), s.ToString().c_str());
       exit(1);
     }
     return policy;
   } else if (FLAGS_bloom_bits < 0) {
     return BlockBasedTableOptions().filter_policy;
-  }
-  const FilterPolicy* new_policy;
-  if (FLAGS_use_block_based_filter) {
-    if (FLAGS_ribbon_starting_level < 999) {
-      fprintf(
-          stderr,
-          "Cannot combine use_block_based_filter and ribbon_starting_level\n");
-      exit(1);
-    } else {
-      new_policy = NewBloomFilterPolicy(FLAGS_bloom_bits, true);
-    }
-  } else if (FLAGS_ribbon_starting_level >= 999) {
-    // Use Bloom API
-    new_policy = NewBloomFilterPolicy(FLAGS_bloom_bits, false);
   } else {
-    new_policy = NewRibbonFilterPolicy(
-        FLAGS_bloom_bits, /* bloom_before_level */ FLAGS_ribbon_starting_level);
+    const FilterPolicy* new_policy;
+    if (FLAGS_use_block_based_filter) {
+      if (FLAGS_ribbon_starting_level < 999) {
+        fprintf(stderr,
+                "Cannot combine use_block_based_filter and "
+                "ribbon_starting_level\n");
+        exit(1);
+      } else {
+        new_policy = NewBloomFilterPolicy(FLAGS_bloom_bits, true);
+      }
+    } else if (FLAGS_ribbon_starting_level >= 999) {
+      // Use Bloom API
+      new_policy = NewBloomFilterPolicy(FLAGS_bloom_bits, false);
+    } else {
+      new_policy = NewRibbonFilterPolicy(
+          FLAGS_bloom_bits,
+          /* bloom_before_level */ FLAGS_ribbon_starting_level);
+    }
+    return std::shared_ptr<const FilterPolicy>(new_policy);
   }
-  return std::shared_ptr<const FilterPolicy>(new_policy);
 }
 
 }  // namespace
@@ -2270,6 +2276,10 @@ void StressTest::PrintEnv() const {
           FLAGS_file_checksum_impl.c_str());
   fprintf(stdout, "Bloom bits / key          : %s\n",
           FormatDoubleParam(FLAGS_bloom_bits).c_str());
+  if (!FLAGS_filter_uri.empty()) {
+    fprintf(stdout, "Filter Policy             : %s\n",
+            FLAGS_filter_uri.c_str());
+  }
   fprintf(stdout, "Max subcompactions        : %" PRIu64 "\n",
           FLAGS_subcompactions);
   fprintf(stdout, "Use MultiGet              : %s\n",
