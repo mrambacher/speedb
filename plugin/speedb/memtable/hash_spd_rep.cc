@@ -975,8 +975,31 @@ static std::unordered_map<std::string, OptionTypeInfo> hash_spd_factory_info = {
 }  // namespace
 
 HashSpdRepFactory::HashSpdRepFactory(size_t bucket_count)
-    : bucket_count_(bucket_count) {
+    : bucket_count_(bucket_count) , 
+      terminate_switch_memtable_(false),
+      switch_mem_(nullptr) {
   RegisterOptions("", &bucket_count_, &hash_spd_factory_info);
+  switch_memtable_thread_ =
+      std::thread(&ColumnFamilyData::PrepareSwitchMemTable, this);
+}
+
+void HashSpdRepFactory::PrepareSwitchMemTable() {
+  for (;;) {
+    {
+      std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
+      while (switch_mem_.load(std::memory_order_acquire) != nullptr) {
+        if (terminate_switch_memtable_) {
+          return;
+        }
+
+        switch_memtable_thread_cv_.wait(lck);
+      }
+    }
+
+    // Construct new memtable with an empty initial sequence
+    switch_mem_.store(ConstructNewMemtable(mutable_cf_options_, 0),
+                      std::memory_order_release);
+  }
 }
 
 MemTableRep* HashSpdRepFactory::CreateMemTableRep(

@@ -35,9 +35,14 @@ class HashSpdRepFactory : public MemTableRepFactory {
 
   static const char* kClassName() { return "speedb.HashSpdRepFactory"; }
   const char* Name() const override { return kClassName(); }
-
+  void PrepareSwitchMemTable();
  private:
   size_t bucket_count_;
+  std::thread switch_memtable_thread_;
+  std::mutex switch_memtable_thread_mutex_;
+  std::condition_variable switch_memtable_thread_cv_;
+  bool terminate_switch_memtable_;
+  std::atomic<MemTable*> switch_mem_;  
 };
 
 }  // namespace ROCKSDB_NAMESPACE
