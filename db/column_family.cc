@@ -30,6 +30,7 @@
 #include "db/write_controller.h"
 #include "file/sst_file_manager_impl.h"
 #include "logging/logging.h"
+#include "memory/memory_manager.h"
 #include "monitoring/thread_status_util.h"
 #include "options/options_helper.h"
 #include "port/port.h"
@@ -521,10 +522,11 @@ ColumnFamilyData::ColumnFamilyData(
       internal_comparator_(cf_options.comparator),
       initial_cf_options_(SanitizeOptions(db_options, cf_options)),
       ioptions_(db_options, initial_cf_options_),
-      mutable_cf_options_(initial_cf_options_),
+      mutable_cf_options_(initial_cf_options_),      
       is_delete_range_supported_(
           cf_options.table_factory->IsDeleteRangeSupported()),
       write_buffer_manager_(write_buffer_manager),
+      spdb_memory_manager_client_(nullptr),      
       mem_(nullptr),
       imm_(ioptions_.min_write_buffer_number_to_merge,
            ioptions_.max_write_buffer_number_to_maintain,
@@ -668,6 +670,15 @@ ColumnFamilyData::~ColumnFamilyData() {
           id_, name_.c_str());
     }
   }
+}
+
+// this method should be part of the construct but in order to avoid too many
+// code changes it is defined here
+void ColumnFamilyData::SetMemoryClient(WriteBufferManager* mem_manager,
+                                       DBImpl* db) {
+  spdb_memory_manager_client_.reset(mem_manager->NewClient());
+  if (spdb_memory_manager_client_.get())
+    spdb_memory_manager_client_->Register(db, this);
 }
 
 bool ColumnFamilyData::UnrefAndTryDelete() {
@@ -836,12 +847,84 @@ int GetL0ThresholdSpeedupCompaction(int level0_file_num_compaction_trigger,
 }
 }  // namespace
 
+size_t ColumnFamilyData::GetSpdbDelayFactor(
+    int num_unflushed_memtables, int num_l0_files,
+    uint64_t num_compaction_needed_bytes,
+    const MutableCFOptions& mutable_cf_options,
+    const ImmutableCFOptions& immutable_cf_options) {
+  // first condition too many unflushed files
+  if (num_unflushed_memtables >= mutable_cf_options.max_write_buffer_number) {
+    return SpdbMemoryManager::MaxDelayFactor;
+  }
+
+  // second condition compaction is to slow
+
+  if (!mutable_cf_options.disable_auto_compactions &&
+      (num_l0_files >= mutable_cf_options.level0_stop_writes_trigger ||
+       (mutable_cf_options.hard_pending_compaction_bytes_limit > 0 &&
+        num_compaction_needed_bytes >=
+            mutable_cf_options.hard_pending_compaction_bytes_limit))) {
+    return SpdbMemoryManager::MaxDelayFactor;
+  }
+
+  size_t delay_factor = 0;
+  if (mutable_cf_options.max_write_buffer_number >= 3) {
+    int start_slow = mutable_cf_options.max_write_buffer_number * 2 / 3;
+    start_slow = std::max<int>(
+        start_slow, immutable_cf_options.min_write_buffer_number_to_merge);
+    if (num_unflushed_memtables >= start_slow) {
+      int extra_files = num_unflushed_memtables - start_slow + 1;
+      int max_extra_files =
+          mutable_cf_options.max_write_buffer_number - start_slow + 1;
+      // the score is based on square of the disance
+      delay_factor = std::max<size_t>(SpdbMemoryManager::MaxDelayFactor *
+                                          extra_files * extra_files /
+                                          (max_extra_files * max_extra_files),
+                                      delay_factor);
+    }
+  }
+  if (!mutable_cf_options.disable_auto_compactions) {
+    int start_slow = mutable_cf_options.level0_slowdown_writes_trigger;
+    if (num_l0_files >= start_slow) {
+      int extra_files = num_l0_files - start_slow + 1;
+      int max_extra_files =
+          mutable_cf_options.level0_stop_writes_trigger - start_slow + 1;
+      // the score is based on square of the disance
+      delay_factor = std::max<size_t>(SpdbMemoryManager::MaxDelayFactor *
+                                          extra_files * extra_files /
+                                          (max_extra_files * max_extra_files),
+                                      delay_factor);
+      
+    }
+
+    // Compaction-related
+    if (mutable_cf_options.soft_pending_compaction_bytes_limit > 0 &&
+        num_compaction_needed_bytes >=
+            mutable_cf_options.soft_pending_compaction_bytes_limit) {
+      size_t extra_data =
+          num_compaction_needed_bytes -
+          mutable_cf_options.soft_pending_compaction_bytes_limit;
+      auto hard_limit =
+          mutable_cf_options.hard_pending_compaction_bytes_limit > 0
+              ? mutable_cf_options.hard_pending_compaction_bytes_limit
+              : mutable_cf_options.soft_pending_compaction_bytes_limit * 8;
+      size_t max_extra_data =
+          hard_limit - mutable_cf_options.soft_pending_compaction_bytes_limit;
+      delay_factor = std::max<size_t>(
+          SpdbMemoryManager::MaxDelayFactor * extra_data / max_extra_data,
+          delay_factor);
+    }
+  }
+  return delay_factor;
+}
+
 std::pair<WriteStallCondition, ColumnFamilyData::WriteStallCause>
 ColumnFamilyData::GetWriteStallConditionAndCause(
     int num_unflushed_memtables, int num_l0_files,
     uint64_t num_compaction_needed_bytes,
     const MutableCFOptions& mutable_cf_options,
     const ImmutableCFOptions& immutable_cf_options) {
+
   if (num_unflushed_memtables >= mutable_cf_options.max_write_buffer_number) {
     return {WriteStallCondition::kStopped, WriteStallCause::kMemtableLimit};
   } else if (!mutable_cf_options.disable_auto_compactions &&
@@ -874,19 +957,124 @@ ColumnFamilyData::GetWriteStallConditionAndCause(
   return {WriteStallCondition::kNormal, WriteStallCause::kNone};
 }
 
+
+
+
 WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
       const MutableCFOptions& mutable_cf_options) {
+  // URQ - What is this good for? write_stall_condition is overwritten below anyway
   auto write_stall_condition = WriteStallCondition::kNormal;
   if (current_ != nullptr) {
     auto* vstorage = current_->storage_info();
+
+    if (spdb_memory_manager_client_.get()) {
+      auto delay_factor = GetSpdbDelayFactor(
+          imm()->NumNotFlushed(), vstorage->l0_delay_trigger_count(),
+          vstorage->estimated_compaction_needed_bytes(), mutable_cf_options,
+          *ioptions());
+      auto prev_factor = spdb_memory_manager_client_->GetDelay();
+      if (delay_factor != prev_factor) {
+        if (delay_factor == 0) {
+          ROCKS_LOG_INFO(ioptions_.logger,
+                         "[%s] client no longer needs delay %d %d %lu",
+                         name_.c_str(), imm()->NumNotFlushed(),
+                         vstorage->l0_delay_trigger_count(),
+                         vstorage->estimated_compaction_needed_bytes());
+        } else if (delay_factor ==
+                   SpdbMemoryManager::SpdbMemoryManager::MaxDelayFactor) {
+          ROCKS_LOG_WARN(ioptions_.logger,
+                         "[%s] client needs Stopping writes %d %d %lu",
+                         name_.c_str(), imm()->NumNotFlushed(),
+                         vstorage->l0_delay_trigger_count(),
+                         vstorage->estimated_compaction_needed_bytes());
+
+        } else {
+          ROCKS_LOG_INFO(ioptions_.logger,
+                         "[%s] client needs slow down of writes %lu %d %d %lu",
+                         name_.c_str(), delay_factor, imm()->NumNotFlushed(),
+                         vstorage->l0_delay_trigger_count(),
+                         vstorage->estimated_compaction_needed_bytes());
+        }
+
+        write_buffer_manager_->ClientNeedsDelay(
+            spdb_memory_manager_client_.get(), delay_factor);
+        if (delay_factor) {
+          ROCKS_LOG_INFO(ioptions_.logger, "[%s] new delayed write rate is %lu",
+                         name_.c_str(), write_buffer_manager_->GetDelayedRate());
+        }
+      }
+    }
+
+
+    // ==============================================
+    // URQ - WHAT IS THIS DUPLICATION FOR???????
+    // ==============================================
+
+    //  use the rocksdb delay flow anyway because it set up compaction pressure
+    //  etc which will increase
+    // the number of parallel compaction
+    //  TBD remove this code 
+
     auto write_controller = column_family_set_->write_controller_;
     uint64_t compaction_needed_bytes =
         vstorage->estimated_compaction_needed_bytes();
+    if (spdb_memory_manager_client_) {
+      auto delay_factor = GetSpdbDelayFactor(
+          imm()->NumNotFlushed(), vstorage->l0_delay_trigger_count(),
+          vstorage->estimated_compaction_needed_bytes(), mutable_cf_options,
+          *ioptions());
+      auto prev_factor = spdb_memory_manager_client_->GetDelay();
+      if (delay_factor != prev_factor) {
+        if (delay_factor == 0) {
+          ROCKS_LOG_INFO(ioptions_.logger,
+                         "[%s] client no longer needs delay %d %d %lu",
+                         name_.c_str(), imm()->NumNotFlushed(),
+                         vstorage->l0_delay_trigger_count(),
+                         vstorage->estimated_compaction_needed_bytes());
+        } else if (delay_factor ==
+                   SpdbMemoryManager::SpdbMemoryManager::MaxDelayFactor) {
+          ROCKS_LOG_WARN(ioptions_.logger,
+                         "[%s] client needs Stopping writes %d %d %lu",
+                         name_.c_str(), imm()->NumNotFlushed(),
+                         vstorage->l0_delay_trigger_count(),
+                         vstorage->estimated_compaction_needed_bytes());
 
+        } else {
+          ROCKS_LOG_INFO(ioptions_.logger,
+                         "[%s] client needs slow down of writes %lu %d %d %lu",
+                         name_.c_str(), delay_factor, imm()->NumNotFlushed(),
+                         vstorage->l0_delay_trigger_count(),
+                         vstorage->estimated_compaction_needed_bytes());
+        }
+
+        write_buffer_manager_->ClientNeedsDelay(spdb_memory_manager_client_.get(),
+                                                delay_factor);
+        if (delay_factor) {
+          ROCKS_LOG_INFO(ioptions_.logger, "[%s] new delayed write rate is %lu",
+                         name_.c_str(),
+                         write_buffer_manager_->GetDelayedRate());
+        }
+      }
+    }
+
+     //  use the rocksdb flow because it set up compression pressure etc...
+    // TBD fixme and use one
+
+    // ==============================================
+    // URQ - WHAT IS THE DUPLICATION ABOVE FOR???????
+    // ==============================================
+
+    // ==============================================================================================
+    // URQ - What will GetWriteStallConditionAndCause() return and why do we need all the code below?
+
+    // And, we are reporting to log, updating stats, etc., based on the write_stall_condition and then return
+    // WriteStallCondition::kNormal. That seems undesirable
+    // ==============================================================================================
     auto write_stall_condition_and_cause = GetWriteStallConditionAndCause(
         imm()->NumNotFlushed(), vstorage->l0_delay_trigger_count(),
         vstorage->estimated_compaction_needed_bytes(), mutable_cf_options,
         *ioptions());
+
     write_stall_condition = write_stall_condition_and_cause.first;
     auto write_stall_cause = write_stall_condition_and_cause.second;
 
@@ -1035,7 +1223,11 @@ WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
     }
     prev_compaction_needed_bytes_ = compaction_needed_bytes;
   }
-  return write_stall_condition;
+  if (spdb_memory_manager_client_.get()) {
+    // disable
+    return WriteStallCondition::kNormal;
+  } else
+    return write_stall_condition;
 }
 
 const FileOptions* ColumnFamilyData::soptions() const {

@@ -19,8 +19,11 @@
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <thread>
 
 #include "rocksdb/cache.h"
+#include "rocksdb/env.h"
+
 
 namespace ROCKSDB_NAMESPACE {
 class CacheReservationManager;
@@ -36,7 +39,8 @@ class StallInterface {
   virtual void Signal() = 0;
 };
 
-class WriteBufferManager final {
+// write buffer manager was expanded using spdb_memory_manager
+class WriteBufferManager {
  public:
   // Delay Mechanism (allow_delays_and_stalls==true) definitions
 
@@ -47,6 +51,11 @@ class WriteBufferManager final {
 
   using UsageNotificationCb =
       std::function<void(UsageState type, uint64_t delay_factor)>;
+
+  struct FlushInitiationOptions {
+    FlushInitiationOptions() {}
+    size_t max_num_parallel_flushes = 4U;
+  };
 
  public:
   // Parameters:
@@ -69,17 +78,19 @@ class WriteBufferManager final {
   //    kicks in if enabled. (see allow_delays_and_stalls above)
   //  Stalls: stalling of writes when memory_usage() exceeds buffer_size. It
   //  will wait for flush to complete and
-  //   memory usage to drop down.
   //
+  //   memory usage to drop down.
   explicit WriteBufferManager(size_t _buffer_size,
                               std::shared_ptr<Cache> cache = {},
-                              bool allow_delays_and_stalls = true);
+                              bool allow_delays_and_stalls = true,
+                              bool initiate_flushes = false,
+                              const FlushInitiationOptions& flush_initiation_options = FlushInitiationOptions());
 
   // No copying allowed
   WriteBufferManager(const WriteBufferManager&) = delete;
   WriteBufferManager& operator=(const WriteBufferManager&) = delete;
 
-  ~WriteBufferManager();
+  virtual ~WriteBufferManager();
 
   // Returns true if buffer_limit is passed to limit the total memory usage and
   // is greater than 0.
@@ -108,7 +119,7 @@ class WriteBufferManager final {
     return buffer_size_.load(std::memory_order_relaxed);
   }
 
-  void SetBufferSize(size_t new_size) {
+  virtual void SetBufferSize(size_t new_size) {
     buffer_size_.store(new_size, std::memory_order_relaxed);
     mutable_limit_.store(new_size * 7 / 8, std::memory_order_relaxed);
     // Check if stall is active and can be ended.
@@ -121,8 +132,8 @@ class WriteBufferManager final {
   // Below functions should be called by RocksDB internally.
 
   // Should only be called from write thread
-  bool ShouldFlush() const {
-    if (enabled()) {
+  virtual bool ShouldFlush() const {
+    if ((initiate_flushes_ == false) && enabled()) {
       if (mutable_memtable_memory_usage() >
           mutable_limit_.load(std::memory_order_relaxed)) {
         return true;
@@ -165,13 +176,13 @@ class WriteBufferManager final {
     return memory_usage() >= buffer_size_;
   }
 
-  void ReserveMem(size_t mem);
+  virtual void ReserveMem(size_t mem);
 
   // We are in the process of freeing `mem` bytes, so it is not considered
   // when checking the soft limit.
   void ScheduleFreeMem(size_t mem);
 
-  void FreeMem(size_t mem);
+  virtual void FreeMem(size_t mem);
 
   // Add the DB instance to the queue and block the DB.
   // Should only be called by RocksDB internally.
@@ -193,6 +204,15 @@ class WriteBufferManager final {
   void RegisterForUsageNotifications(void* client, UsageNotificationCb cb);
   void DeregisterFromUsageNotifications(void* client);
 
+ public:
+  using InitiateFlushRequest = std::function<bool (size_t min_size_to_flush, bool force_flush)>;
+
+  void RegisterFlushInitiator(void* initiator, InitiateFlushRequest request);
+  void DeRegisterFlushInitiator(void* initiator);
+
+  void FlushStarted(bool wbm_initiated);
+  void FlushEnded(bool wbm_initiated);
+  
  private:
   std::atomic<size_t> buffer_size_;
   std::atomic<size_t> mutable_limit_;
@@ -219,6 +239,28 @@ class WriteBufferManager final {
   void NotifyUsageIfApplicable(ssize_t memory_changed_size,
                                bool force_notification);
 
+ private:
   UsageState usage_state_ = UsageState::kNone;
+
+ private:
+  void InitiateFlushesThread();
+  void WakeUpFlushesThread();
+  void ReevaluateNeedForMoreFlushes();
+
+ private:
+  bool initiate_flushes_ = false;
+  FlushInitiationOptions flush_initiation_options_ = FlushInitiationOptions();
+
+  std::unordered_map<void*, InitiateFlushRequest> flush_initiators;
+  std::atomic<size_t> num_running_flushes_ = 0U;
+  size_t next_flush_initiation_recalc_threshold = 0U;
+
+  std::mutex flushes_mu_;
+  std::condition_variable flushes_wakeup_cv;
+
+  std::thread flushes_thread;
+  bool terminate_flushes_thread = false;
 };
-}  // namespace ROCKSDB_NAMESPACE
+
+}
+

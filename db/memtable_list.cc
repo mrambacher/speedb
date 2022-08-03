@@ -373,6 +373,9 @@ void MemTableList::PickMemtablesToFlush(uint64_t max_memtable_id,
       ret->push_back(m);
     }
   }
+  // URQ - When is this true and what does it mean?
+  // URQ - Could we have set the flush_in_progress_ above to true and set flush_requested_ 
+  // below to false?
   if (!atomic_flush || num_flush_not_started_ == 0) {
     flush_requested_ = false;  // start-flush request is complete
   }
@@ -419,6 +422,7 @@ Status MemTableList::TryInstallMemtableFlushResults(
     // All the edits are associated with the first memtable of this batch.
     assert(i == 0 || mems[i]->GetEdits()->NumEntries() == 0);
 
+    // URQ - Shouldn't we clear flush_in_progress_?
     mems[i]->flush_completed_ = true;
     mems[i]->file_number_ = file_number;
   }
@@ -767,6 +771,7 @@ Status InstallMemtableAtomicFlushResults(
     assert(nullptr != file_metas[k]);
     for (size_t i = 0; i != mems_list[k]->size(); ++i) {
       assert(i == 0 || (*mems_list[k])[i]->GetEdits()->NumEntries() == 0);
+      // URQ - Shouldn't we clear flush_in_progress_ as well?
       (*mems_list[k])[i]->SetFlushCompleted(true);
       (*mems_list[k])[i]->SetFileNumber(file_metas[k]->fd.GetNumber());
     }

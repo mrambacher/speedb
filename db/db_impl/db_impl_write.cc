@@ -127,6 +127,13 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
                          bool disable_memtable, uint64_t* seq_used,
                          size_t batch_cnt,
                          PreReleaseCallback* pre_release_callback) {
+  // URQ - I see that last_batch_group_size_ is calculated below. Is this the size of the batch
+  // that has written before this one or this one? Is it ok?
+  if (write_buffer_manager_ != nullptr) {
+   write_buffer_manager_->EnforceDelay(last_batch_group_size_);
+  }
+
+  
   assert(!seq_per_batch_ || batch_cnt != 0);
   if (my_batch == nullptr) {
     return Status::InvalidArgument("Batch is nullptr!");
@@ -1745,7 +1752,6 @@ Status DBImpl::DelayWrite(uint64_t num_bytes,
           // We already delayed this write `delay` microseconds
           break;
         }
-
         delayed = true;
         // Sleep for 0.001 seconds
         immutable_db_options_.clock->SleepForMicroseconds(kDelayInterval);

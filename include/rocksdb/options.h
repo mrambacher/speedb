@@ -1703,6 +1703,7 @@ struct WriteOptions {
 // Options that control flush operations
 struct FlushOptions {
   // If true, the flush will wait until the flush is done.
+  // URQ - "the flush will wait"? What does it mean? Who waits? How does it "wait"?
   // Default: true
   bool wait;
   // If true, the flush would proceed immediately even it means writes will
@@ -1711,7 +1712,18 @@ struct FlushOptions {
   // is performed by someone else (foreground call or background thread).
   // Default: false
   bool allow_write_stall;
-  FlushOptions() : wait(true), allow_write_stall(false) {}
+  // URQ - This is not actually in use. Should it? What is it for?  
+  // This will allow (in the future) to flush without switching memtable if we already have at least one immutable memtable
+  bool force_flush_mutable_memtable;
+  // URQ - This is not actually in use. Should it? What is it for?  
+  // For future use - In case we will flush a partial memtable
+  bool flush_all_memtables;
+
+  FlushOptions()
+      : wait(true),
+        allow_write_stall(false),
+        force_flush_mutable_memtable(true),
+	flush_all_memtables(true)  {}
 };
 
 // Create a Logger from provided DBOptions

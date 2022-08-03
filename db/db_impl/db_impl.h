@@ -363,6 +363,9 @@ class DBImpl : public DB {
   virtual Status LockWAL() override;
   virtual Status UnlockWAL() override;
 
+  // flush initiated by the write buffer manager to free some space
+  bool InitiateMemoryManagerFlushRequest(ColumnFamilyData* cfd);
+
   virtual SequenceNumber GetLatestSequenceNumber() const override;
 
   // IncreaseFullHistoryTsLow(ColumnFamilyHandle*, std::string) will acquire
@@ -1634,6 +1637,8 @@ class DBImpl : public DB {
       SequenceNumber earliest_write_conflict_snapshot,
       SnapshotChecker* snapshot_checker, LogBuffer* log_buffer,
       Env::Priority thread_pri);
+
+  
 
   // Flush the memtables of (multiple) column families to multiple files on
   // persistent storage.

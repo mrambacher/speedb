@@ -2808,6 +2808,13 @@ void DBImpl::BackgroundCallFlush(Env::Priority thread_pri) {
     InstrumentedMutexLock l(&mutex_);
     assert(bg_flush_scheduled_);
     num_running_flushes_++;
+    // URQ - Do all flushes pass here? - YES
+    if (write_buffer_manager_) {
+      // URQ - What about the size of the flush? What will the WBM do with the knowledge that a flush is in progress?
+      // The size is not actually in use here. The memory manager doesn't depend on the size of the flushed memtables
+      write_buffer_manager_->FlushStarted(0);
+    }
+    
 
     std::unique_ptr<std::list<uint64_t>::iterator>
         pending_outputs_inserted_elem(new std::list<uint64_t>::iterator(
@@ -2865,6 +2872,10 @@ void DBImpl::BackgroundCallFlush(Env::Priority thread_pri) {
     assert(num_running_flushes_ > 0);
     num_running_flushes_--;
     bg_flush_scheduled_--;
+    // URQ - Do all completed flushes pass here? - YES
+    if (write_buffer_manager_) {
+      write_buffer_manager_->FlushEnded(0);
+    }    
     // See if there's more work to be done
     MaybeScheduleFlushOrCompaction();
     atomic_flush_install_cv_.SignalAll();
@@ -3784,6 +3795,51 @@ Status DBImpl::WaitForCompact(bool wait_unscheduled) {
     bg_cv_.Wait();
   }
   return error_handler_.GetBGError();
+}
+
+bool DBImpl::InitiateMemoryManagerFlushRequest(ColumnFamilyData* cfd) {
+  // URQ - This method is not synched with the code that puts a cf on the flush queue =>
+  // Couldn't the cf be placed on the queue after we check and continue?
+  // URQ - What if the cf is already undergoing flush (not queued, but actually being flushed)?
+  // URQ - This may trigger atomic flush and include all of the DB's cf-s => These cf-s may be clients waiting to 
+  // be flush by the memory manager (or will be soon). Is that ok? 
+  if (cfd->queued_for_flush()) return false;
+  FlushOptions flush_options;
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "[%s] write buffer manager flush started current usage %lu out of %lu",
+      cfd->GetName().c_str(), cfd->write_buffer_mgr()->memory_usage(),
+      cfd->write_buffer_mgr()->buffer_size());
+  // URQ_ Why is this check here? The caller (the memory manager is the one calling this method and
+  // it is the one knowing this info)?
+  if (cfd->write_buffer_mgr()->memory_usage() >  cfd->write_buffer_mgr()->buffer_size()) {
+    ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                   "[%s] write buffer manager flush started too late memory "
+                   "quata exceeded delayed_write_rate is %lu",
+                   cfd->GetName().c_str(),
+                   write_buffer_manager_->GetDelayedRate());
+  }
+
+  // URQ - When the memory manager picks a cf for flushing, it considers its mutable 
+  // memtable as well. However, here we reuest a flush of only the immutable ones => 
+  // the freed memory by flushing is not the same as the one causing this cf to be picked
+  flush_options.allow_write_stall = true;
+  flush_options.wait = false;
+  flush_options.force_flush_mutable_memtable = false;
+  flush_options.flush_all_memtables = false;
+  Status s;
+  if (immutable_db_options_.atomic_flush) {
+    s = AtomicFlushMemTables({cfd}, flush_options,
+                             FlushReason::kWriteBufferManager);
+  } else {
+    s = FlushMemTable(cfd, flush_options, FlushReason::kWriteBufferManager);
+  }
+
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "[%s] write buffer manager intialize flush finished, status: %s\n",
+      cfd->GetName().c_str(), s.ToString().c_str());
+  return true;
 }
 
 }  // namespace ROCKSDB_NAMESPACE

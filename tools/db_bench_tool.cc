@@ -326,6 +326,7 @@ DEFINE_int64(max_scan_distance, 0,
              "if FLAGS_reverse_iterator is set to true) when value is nonzero");
 
 DEFINE_bool(use_uint64_comparator, false, "use Uint64 user comparator");
+DEFINE_bool(use_spdb_memory_manager, true, "use the new memory manager");
 
 DEFINE_int64(batch_size, 1, "Batch size");
 
@@ -3875,10 +3876,7 @@ class Benchmark {
 
     options.env = FLAGS_env;
     options.max_open_files = FLAGS_open_files;
-    if (FLAGS_cost_write_buffer_to_cache || FLAGS_db_write_buffer_size != 0) {
-      options.write_buffer_manager.reset(
-          new WriteBufferManager(FLAGS_db_write_buffer_size, cache_));
-    }
+
     options.arena_block_size = FLAGS_arena_block_size;
     options.write_buffer_size = FLAGS_write_buffer_size;
     options.max_write_buffer_number = FLAGS_max_write_buffer_number;
@@ -4282,6 +4280,33 @@ class Benchmark {
         exit(1);
       }
       options.comparator = test::BytewiseComparatorWithU64TsWrapper();
+    }
+    if (FLAGS_use_spdb_memory_manager) {
+      SpdbMemoryManagerOptions memopt(cache_, options.env->GetSystemClock());
+
+      if (FLAGS_db_write_buffer_size) {
+        memopt.dirty_data_size = FLAGS_db_write_buffer_size;
+      }
+      if (options.max_background_flushes > 0) {
+        memopt.n_parallel_flushes = options.max_background_flushes;
+      } else {
+        options.max_background_flushes = memopt.n_parallel_flushes;
+      }
+      // URQ - Why and should it also be part of the options sanitization?
+      options.max_background_compactions = options.max_background_flushes*2;
+      options.max_background_jobs =
+          options.max_background_flushes + options.max_background_compactions;
+
+      if (options.delayed_write_rate) {
+	memopt.delayed_write_rate = options.delayed_write_rate;
+      }
+      options.db_write_buffer_size = memopt.dirty_data_size;
+      options.write_buffer_manager.reset(new SpdbMemoryManager(memopt));
+      OptimizeForSpdbMemoryManager(options);
+    } else if (FLAGS_cost_write_buffer_to_cache ||
+               FLAGS_db_write_buffer_size != 0) {
+      options.write_buffer_manager.reset(
+          new WriteBufferManager(FLAGS_db_write_buffer_size, cache_));
     }
 
     // Integrated BlobDB

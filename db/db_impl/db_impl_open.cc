@@ -534,6 +534,10 @@ Status DBImpl::Recover(
       if (!s.ok()) {
         return s;
       }
+      if (immutable_db_options_.write_buffer_manager.get() != nullptr) {
+        cfd->SetMemoryClient(immutable_db_options_.write_buffer_manager.get(),
+                             this);
+      }      
     }
   }
   // DB mutex is already held
@@ -824,8 +828,10 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
       }
     }
   };
-
   mutex_.AssertHeld();
+  if (write_buffer_manager_) {
+    write_buffer_manager_->DisableFlush(this);
+  }
   Status status;
   std::unordered_map<int, VersionEdit> version_edits;
   // no need to refcount because iteration is under mutex
@@ -1311,6 +1317,9 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
 
   event_logger_.Log() << "job" << job_id << "event"
                       << "recovery_finished";
+  if (write_buffer_manager_) {
+    write_buffer_manager_->EnableFlush(this);
+  }
 
   return status;
 }

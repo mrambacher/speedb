@@ -2787,6 +2787,7 @@ Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
       assert(cfd != nullptr);
       std::map<std::string, std::shared_ptr<FSDirectory>> dummy_created_dirs;
       s = cfd->AddDirectories(&dummy_created_dirs);
+      cfd->SetMemoryClient(write_buffer_manager_, this);
     }
     if (s.ok()) {
       single_column_family_mode_ = false;

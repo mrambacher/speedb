@@ -20,14 +20,18 @@
 namespace ROCKSDB_NAMESPACE {
 WriteBufferManager::WriteBufferManager(size_t _buffer_size,
                                        std::shared_ptr<Cache> cache,
-                                       bool allow_delays_and_stalls)
+                                       bool allow_delays_and_stalls,
+                                       bool initiate_flushes,
+                                       const FlushInitiationOptions& flush_initiation_options)
     : buffer_size_(_buffer_size),
       mutable_limit_(buffer_size_ * 7 / 8),
       memory_used_(0),
       memory_active_(0),
       cache_res_mgr_(nullptr),
       allow_delays_and_stalls_(allow_delays_and_stalls),
-      stall_active_(false) {
+      stall_active_(false),
+      initiate_flushes_(initiate_flushes),
+      flush_initiation_options_(flush_initiation_options) {
 #ifndef ROCKSDB_LITE
   if (cache) {
     // Memtable's memory usage tends to fluctuate frequently
@@ -47,6 +51,10 @@ WriteBufferManager::~WriteBufferManager() {
   std::unique_lock<std::mutex> lock(mu_);
   assert(queue_.empty());
 #endif
+
+  terminate_flushes_thread = true;
+  WakeUpFlushesThread();
+  flushes_thread.join();
 }
 
 std::size_t WriteBufferManager::dummy_entries_in_cache_usage() const {
@@ -79,6 +87,7 @@ void WriteBufferManager::ReserveMemWithCache(size_t mem) {
   // lock-free solution if it ends up with a performance bottleneck.
   std::lock_guard<std::mutex> lock(cache_res_mgr_mu_);
 
+  // URQ - Why not use: memory_used_.fetch_add(mem, std::memory_order_relaxed);?
   size_t new_mem_used = memory_used_.load(std::memory_order_relaxed) + mem;
   memory_used_.store(new_mem_used, std::memory_order_relaxed);
   Status s = cache_res_mgr_->UpdateCacheReservation(new_mem_used);
@@ -317,6 +326,57 @@ void WriteBufferManager::NotifyUsageIfApplicable(ssize_t memory_changed_size,
       cb_pair.second(new_usage_state, delay_factor);
     }
   }
+}
+
+void WriteBufferManager::InitiateFlushesThread() {
+
+}
+
+void WriteBufferManager::WakeUpFlushesThread() {
+  std::unique_lock<std::mutex> lock(flushes_mu_);
+  flushes_wakeup_cv.notify_one();
+}
+
+void WriteBufferManager::FlushStarted(bool wbm_initiated) {
+  if (wbm_initiated) {
+    return;
+  }
+
+  std::unique_lock<std::mutex> lock(flushes_mu_);
+  ++num_running_flushes_;
+}
+
+void WriteBufferManager::FlushEnded(bool wbm_initiated) {
+  std::unique_lock<std::mutex> lock(flushes_mu_);
+  assert(num_running_flushes_ > 0U);
+  --num_running_flushes_;
+}
+
+void WriteBufferManager::ReevaluateNeedForMoreFlushes() {
+   const int start_delay_percent = 80;
+  size_t start_delay_size = buffer_size() * start_delay_percent / 100;  
+  size_t start_flush_step = start_delay_size  / n_parallel_flushes_;
+  size_t start_flush_size = start_flush_step; 
+
+  size_t delay_factor = 0;
+  next_recalc_size_ =
+      start_flush_size +
+    start_flush_step * (n_running_flushes_ + n_scheduled_flushes_);
+    // URQ - I SUGGEST USING HERE THE AMOUNT OF MEMORY STILL NOT MARKED FOR FLUSH (MUTABLE + IMMUTABLE)
+  if (memory_usage() >= next_recalc_size_) {
+    // need to schedule more 
+    if (InitiateFlushRequest()) {
+      next_recalc_size_ =
+          start_flush_size +
+          start_flush_step * (n_running_flushes_ + n_scheduled_flushes_);
+    } else {      
+      // wait 1% extra before intiating one moer
+      // URQ - Why?
+      // To lower the number of mutexes locks
+      // raise the threshold a bit before retrying to initiate the flush again
+      next_recalc_size_ = memory_usage() + buffer_size() / 100;
+    }
+  } 
 }
 
 }  // namespace ROCKSDB_NAMESPACE
