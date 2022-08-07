@@ -104,7 +104,7 @@ SpdbWriteImpl::SpdbWriteImpl(DBImpl* db)
 #if defined(_GNU_SOURCE) && defined(__GLIBC_PREREQ)
 #if __GLIBC_PREREQ(2, 12)
   auto thread_handle = flush_thread_.native_handle();
-  pthread_setname_np(thread_handle, "speedb:write_flush");
+  pthread_setname_np(thread_handle, "speedb:wflush");
 #endif
 #endif
 }
