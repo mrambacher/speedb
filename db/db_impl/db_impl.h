@@ -1176,6 +1176,8 @@ class DBImpl : public DB {
                    bool disable_memtable);
   IOStatus SpdbWriteToWAL(WriteBatch* merged_batch, size_t write_with_wal,
                           const WriteBatch* to_be_cached_state);
+  IOStatus SpdbSyncWAL();
+
   void SuspendSpdbWrites();
   void ResumeSpdbWrites();
                         

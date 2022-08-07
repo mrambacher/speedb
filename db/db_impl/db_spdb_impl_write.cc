@@ -67,9 +67,9 @@ void SpdbWriteImpl::WritesBatchList::WaitForPendingWrites() {
   WriteLock wl(&write_ref_rwlock_);
 }
 
-void SpdbWriteImpl::WriteBatchComplete(void* list, bool leader_batch) {
+void SpdbWriteImpl::WriteBatchComplete(void* list, bool leader_batch, const WriteOptions& write_options) {
   if (leader_batch) {
-    SwitchAndWriteBatchGroup();
+    SwitchAndWriteBatchGroup(write_options);
   } else {
     WritesBatchList* write_batch_list = static_cast<WritesBatchList*>(list);
     write_batch_list->WriteBatchComplete(false, db_);
@@ -231,7 +231,7 @@ SpdbWriteImpl::WritesBatchList& SpdbWriteImpl::SwitchBatchGroup() {
   return batch_group;
 }
 
-void SpdbWriteImpl::SwitchAndWriteBatchGroup() {
+void SpdbWriteImpl::SwitchAndWriteBatchGroup(const WriteOptions& write_options) {
   // take the wal write rw lock from protecting another batch group wal write
   MutexLock l(&wal_write_mutex_);
   NotifyIfActionNeeded();
@@ -301,6 +301,10 @@ void SpdbWriteImpl::SwitchAndWriteBatchGroup() {
       // TBD what todo with error
       ROCKS_LOG_ERROR(db_->immutable_db_options().info_log,
                       "Error write to wal!!! %s", io_s.ToString().c_str());
+    } else {
+      if (write_options.sync) {
+        db_->SpdbSyncWAL();
+      }
     }
   }
 
@@ -351,7 +355,7 @@ Status DBImpl::SpdbWrite(const WriteOptions& write_options, WriteBatch* batch,
   }
 
   // handle !status.ok()
-  spdb_write_->WriteBatchComplete(list, leader_batch);
+  spdb_write_->WriteBatchComplete(list, leader_batch, write_options);
   spdb_write_->Unlock(true);
 
   return status;
@@ -373,7 +377,22 @@ void DBImpl::ResumeSpdbWrites() {
   } 
 }
 
-
+IOStatus DBImpl::SpdbSyncWAL() {
+  IOStatus io_s;
+  StopWatch sw(immutable_db_options_.clock, stats_, WAL_FILE_SYNC_MICROS);
+  {
+    InstrumentedMutexLock l(&log_write_mutex_);
+    log::Writer* log_writer = logs_.back().writer;
+    io_s = log_writer->file()->Sync(immutable_db_options_.use_fsync);
+  } 
+  if (io_s.ok() && !log_dir_synced_) {
+    io_s = directories_.GetWalDir()->FsyncWithDirOptions(
+        IOOptions(), nullptr,
+        DirFsyncOptions(DirFsyncOptions::FsyncReason::kNewFileSynced));
+    log_dir_synced_ = true;
+  } 
+  return io_s;
+}
 IOStatus DBImpl::SpdbWriteToWAL(WriteBatch* merged_batch, size_t write_with_wal,
                                 const WriteBatch* to_be_cached_state) {
   assert(merged_batch != nullptr || write_with_wal == 0);
@@ -383,8 +402,6 @@ IOStatus DBImpl::SpdbWriteToWAL(WriteBatch* merged_batch, size_t write_with_wal,
   const uint64_t log_entry_size = log_entry.size();
 
   {
-    // TODO: Make sure accessing logs_ with only log writer mutex held is
-    // enough and that we don't need to hold onto DB mutex as well
     InstrumentedMutexLock l(&log_write_mutex_);
     log::Writer* log_writer = logs_.back().writer;
     io_s = log_writer->AddRecord(log_entry);

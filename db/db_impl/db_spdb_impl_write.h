@@ -40,8 +40,8 @@ class SpdbWriteImpl {
   void Shutdown();
   void NotifyIfActionNeeded();
   void WaitForWalWriteComplete(void* list);
-  void SwitchAndWriteBatchGroup();
-  void WriteBatchComplete(void* list, bool leader_batch);
+  void SwitchAndWriteBatchGroup(const WriteOptions& write_options);
+  void WriteBatchComplete(void* list, bool leader_batch, const WriteOptions& write_options);
   port::RWMutexWr& GetFlushRWLock() { return flush_rwlock_; }
   void Lock(bool is_read);
   void Unlock(bool is_read);
