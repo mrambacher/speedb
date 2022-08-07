@@ -25,14 +25,17 @@
 namespace ROCKSDB_NAMESPACE {
 
 // add_buffer_mutex_ is held
-void SpdbWriteImpl::WritesBatchList::Add(WriteBatch* batch, bool disable_wal,
+void SpdbWriteImpl::WritesBatchList::Add(WriteBatch* batch, const WriteOptions& write_options,
                                          bool* leader_batch) {
   const size_t seq_inc = batch->Count();
   max_seq_ = WriteBatchInternal::Sequence(batch) + seq_inc - 1;
 
-  if (!disable_wal) {
+  if (!write_options.disableWAL) {
     wal_writes_.push_back(batch);
   }
+  if (write_options.sync) {
+    need_sync_ = true;
+  }  
   if (empty_) {
     // first wal batch . should take the buffer_write_rw_lock_ as write
     *leader_batch = true;
@@ -67,9 +70,9 @@ void SpdbWriteImpl::WritesBatchList::WaitForPendingWrites() {
   WriteLock wl(&write_ref_rwlock_);
 }
 
-void SpdbWriteImpl::WriteBatchComplete(void* list, bool leader_batch, const WriteOptions& write_options) {
+void SpdbWriteImpl::WriteBatchComplete(void* list, bool leader_batch) {
   if (leader_batch) {
-    SwitchAndWriteBatchGroup(write_options);
+    SwitchAndWriteBatchGroup();
   } else {
     WritesBatchList* write_batch_list = static_cast<WritesBatchList*>(list);
     write_batch_list->WriteBatchComplete(false, db_);
@@ -177,18 +180,18 @@ Status DBImpl::RegisterFlushOrTrim() {
   return status;
 }
 
-void* SpdbWriteImpl::Add(WriteBatch* batch, bool disable_wal,
+void* SpdbWriteImpl::Add(WriteBatch* batch, const WriteOptions& write_options,
                          bool* leader_batch) {
   MutexLock l(&add_buffer_mutex_);
   WritesBatchList& pending_list = GetActiveList();
   const uint64_t sequence =
       db_->FetchAddLastAllocatedSequence(batch->Count()) + 1;
   WriteBatchInternal::SetSequence(batch, sequence);
-  pending_list.Add(batch, disable_wal, leader_batch);
+  pending_list.Add(batch, write_options, leader_batch);
   return &pending_list;
 }
 
-void* SpdbWriteImpl::AddMerge(WriteBatch* batch, bool disable_wal,
+void* SpdbWriteImpl::AddMerge(WriteBatch* batch, const WriteOptions& write_options,
                               bool* leader_batch) {
   // thie will be released AFTER ths batch will be written to memtable!
   add_buffer_mutex_.Lock();
@@ -202,7 +205,7 @@ void* SpdbWriteImpl::AddMerge(WriteBatch* batch, bool disable_wal,
   }
 
   WritesBatchList& pending_list = GetActiveList();
-  pending_list.Add(batch, disable_wal, leader_batch);
+  pending_list.Add(batch, write_options, leader_batch);
   return &pending_list;
 }
 // release the add merge lock
@@ -231,7 +234,7 @@ SpdbWriteImpl::WritesBatchList& SpdbWriteImpl::SwitchBatchGroup() {
   return batch_group;
 }
 
-void SpdbWriteImpl::SwitchAndWriteBatchGroup(const WriteOptions& write_options) {
+void SpdbWriteImpl::SwitchAndWriteBatchGroup() {
   // take the wal write rw lock from protecting another batch group wal write
   MutexLock l(&wal_write_mutex_);
   NotifyIfActionNeeded();
@@ -302,7 +305,7 @@ void SpdbWriteImpl::SwitchAndWriteBatchGroup(const WriteOptions& write_options) 
       ROCKS_LOG_ERROR(db_->immutable_db_options().info_log,
                       "Error write to wal!!! %s", io_s.ToString().c_str());
     } else {
-      if (write_options.sync) {
+      if (batch_group.need_sync_) {
         db_->SpdbSyncWAL();
       }
     }
@@ -336,10 +339,11 @@ Status DBImpl::SpdbWrite(const WriteOptions& write_options, WriteBatch* batch,
     // need to wait all prev batches completed to write to memetable and avoid
     // new batches to write to memetable before this one
     list =
-        spdb_write_->AddMerge(batch, write_options.disableWAL, &leader_batch);
+        spdb_write_->AddMerge(batch, write_options, &leader_batch);
   } else {
-    list = spdb_write_->Add(batch, write_options.disableWAL, &leader_batch);
+    list = spdb_write_->Add(batch, write_options, &leader_batch);
   }
+
 
   if (!disable_memtable) {
     bool concurrent_memtable_writes = !batch->HasMerge();
@@ -355,7 +359,7 @@ Status DBImpl::SpdbWrite(const WriteOptions& write_options, WriteBatch* batch,
   }
 
   // handle !status.ok()
-  spdb_write_->WriteBatchComplete(list, leader_batch, write_options);
+  spdb_write_->WriteBatchComplete(list, leader_batch);
   spdb_write_->Unlock(true);
 
   return status;

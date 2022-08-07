@@ -34,14 +34,14 @@ class SpdbWriteImpl {
 
   ~SpdbWriteImpl();
   void SpdbFlushWriteThread();
-  void* Add(WriteBatch* batch, bool disable_wal, bool* leader_batch);
-  void* AddMerge(WriteBatch* batch, bool disable_wal, bool* leader_batch);
+  void* Add(WriteBatch* batch, const WriteOptions& write_options, bool* leader_batch);
+  void* AddMerge(WriteBatch* batch, const WriteOptions& write_options, bool* leader_batch);
   void CompleteMerge();
   void Shutdown();
   void NotifyIfActionNeeded();
   void WaitForWalWriteComplete(void* list);
-  void SwitchAndWriteBatchGroup(const WriteOptions& write_options);
-  void WriteBatchComplete(void* list, bool leader_batch, const WriteOptions& write_options);
+  void SwitchAndWriteBatchGroup();
+  void WriteBatchComplete(void* list, bool leader_batch);
   port::RWMutexWr& GetFlushRWLock() { return flush_rwlock_; }
   void Lock(bool is_read);
   void Unlock(bool is_read);
@@ -53,13 +53,15 @@ class SpdbWriteImpl {
     port::RWMutexWr buffer_write_rw_lock_;
     port::RWMutexWr write_ref_rwlock_;
     bool empty_ = true;
+    std::atomic<bool> need_sync_ = false;
     void Clear() {
       wal_writes_.clear();
       max_seq_ = 0;
       empty_ = true;
+      need_sync_ = false;
     }
 
-    void Add(WriteBatch* batch, bool disable_wal, bool* leader_batch);
+    void Add(WriteBatch* batch, const WriteOptions& write_options, bool* leader_batch);
     uint64_t GetMaxSeq() const { return max_seq_; }
     void WaitForPendingWrites();
 
