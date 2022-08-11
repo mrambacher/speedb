@@ -16,6 +16,25 @@
 #include "util/bloom_impl.h"
 #include "util/fastrange.h"
 
+#include <stdio.h>
+extern bool g_speedb_use_avx2;
+extern bool g_speedb_prefetch_on_query;
+extern bool g_printf;
+
+extern int num_checks;
+extern int g_num_double_hash;
+
+#define ENABLE_PRINTF (1)
+
+#if (ENABLE_PRINTF == 1)
+  #define PRINTF(args...) \
+  if (g_printf) {         \
+    printf(args);         \
+  }
+#else
+  #define PRINTF(...)
+#endif
+
 #ifdef HAVE_AVX2
 #include <immintrin.h>
 #endif
@@ -64,6 +83,13 @@ static_assert(kMaxNumProbes % 2 == 0U);
 
 static const uint8_t kInBatchIdxMask = (uint8_t{1U} << kInBatchIdxNumBits) - 1;
 static const uint8_t kFirstByteBitsMask = ~kInBatchIdxMask;
+
+constexpr std::array<uint32_t, kMaxNumProbes> HashSetsSeeds{
+    0x00000001, 0x9e3779b9, 0xe35e67b1, 0x734297e9, 0x35fbe861, 0xdeb7c719,
+    0x0448b211, 0x3459b749, 0xab25f4c1, 0x52941879, 0x9c95e071, 0xf5ab9aa9,
+    0x2d6ba521, 0x8bededd9, 0x9bfb72d1, 0x3ae1c209, 0x7fca7981, 0xc576c739,
+    0xd23ee931, 0x0335ad69, 0xc04ff1e1, 0x98702499, 0x7535c391, 0x9f70dcc9,
+    0x0e198e41, 0xf2ab85f9, 0xe6c581f1, 0xc7ecd029, 0x6f54cea1, 0x4c8a6b59};
 
 // ==================================================================================================
 //
@@ -191,6 +217,7 @@ inline int GetBitPosInBlockForHash(uint32_t hash, uint32_t set_idx) {
       return bitpos;
     }
   }
+  ++g_num_double_hash;
 
   return kInBatchIdxNumBits +
          (static_cast<uint32_t>(KNumBitsInBlockBloom *
@@ -244,7 +271,7 @@ bool ReadBlock::AreAllBlockBloomBitsSet(uint32_t hash, uint32_t set_idx,
 #ifdef HAVE_AVX2
   // The AVX2 code currently supports only cache-line / block sizes of 64 bytes
   // (512 bits)
-  if (kBlockSizeInBits == 512) {
+  if (kBlockSizeInBits == 512 && g_speedb_use_avx2) {
     return AreAllBlockBloomBitsSetAvx2(hash, set_idx, hash_set_size);
   } else {
     return AreAllBlockBloomBitsSetNonAvx2(hash, set_idx, hash_set_size);
@@ -253,6 +280,8 @@ bool ReadBlock::AreAllBlockBloomBitsSet(uint32_t hash, uint32_t set_idx,
   return AreAllBlockBloomBitsSetNonAvx2(hash, set_idx, hash_set_size);
 #endif
 }
+
+// // // int s_bitpos_s[8];
 
 #ifdef HAVE_AVX2
 const __m256i mask_vec = _mm256_set1_epi32(0x007FC000);
@@ -265,6 +294,17 @@ const __m256i multipliers =
     _mm256_setr_epi32(0x00000001, 0x9e3779b9, 0xe35e67b1, 0x734297e9,
                       0x35fbe861, 0xdeb7c719, 0x448b211, 0x3459b749);
 
+// // void Print_m256i([[maybe_unused]] const std::string& title, const __m256i & value) {
+// //     PRINTF("%s", title.c_str());
+// //     const size_t n = sizeof(__m256i) / sizeof(uint32_t);
+// //     uint32_t buffer[n];
+// //     _mm256_storeu_si256((__m256i*)buffer, value);
+// //     for (auto i = 0U; i < n; i++)
+// //       PRINTF("[%u] %#010x, ", i, buffer[i]);
+
+// //     PRINTF("\n");
+// // }
+
 bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
                                             size_t hash_set_size) const {
   assert(kBlockSizeInBytes == 64U);
@@ -276,6 +316,8 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
   // See bloom_impl.h for more details
 
   for (;;) {
+    ++num_checks;
+
     // Eight copies of hash
     __m256i hash_vector = _mm256_set1_epi32(hash);
 
@@ -301,6 +343,8 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
         _mm256_cmpgt_epi32(max_bitpos_vec, hash_vector);
 
     if (_mm256_testz_si256(smaller_than_7_vec, smaller_than_7_vec) == false) {
+      ++g_num_double_hash;
+
       __m256i hash_vector_fast_range = orig_hash_vector;
 
       if (set_idx == 0) {
@@ -331,7 +375,10 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
                                        smaller_than_7_vec);
     }
 
+    // // Print_m256i("hash_vector Before << 23", hash_vector);
+
     hash_vector = _mm256_slli_epi32(hash_vector, kNumBlockSizeBitsShiftBits);
+    // // Print_m256i("hash_vector for CheckBitsPositionsInBloomBlock", hash_vector);
 
     auto [is_done, answer] = FastLocalBloomImpl::CheckBitsPositionsInBloomBlock(
         rem_probes, hash_vector, block_address_);
@@ -350,8 +397,12 @@ bool ReadBlock::AreAllBlockBloomBitsSetAvx2(uint32_t hash, uint32_t set_idx,
 
 bool ReadBlock::AreAllBlockBloomBitsSetNonAvx2(uint32_t hash, uint32_t set_idx,
                                                size_t hash_set_size) const {
+                                              
   for (auto i = 0U; i < hash_set_size; ++i) {
+    ++num_checks;
     int bitpos = GetBitPosInBlockForHash(hash, set_idx);
+    // // // s_bitpos_s[i] = bitpos;
+    // // // fprintf(stderr, "i:%u, hash:%#010x, bitpos:%#5x\n", i, hash, bitpos);
     if ((block_address_[bitpos >> 3] &
          (char{1} << (bitpos & kInBatchIdxNumBits))) == 0) {
       return false;
