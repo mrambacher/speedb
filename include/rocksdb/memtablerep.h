@@ -294,6 +294,11 @@ class MemTableRep {
 // new MemTableRep objects
 class MemTableRepFactory : public Customizable {
  public:
+  MemTableRepFactory() {
+    switch_memtable_thread_ =
+      std::thread(&MemTableRepFactory::PrepareSwitchMemTable, this);
+  }
+
   ~MemTableRepFactory() override {}
 
   static const char* Type() { return "MemTableRepFactory"; }
@@ -322,6 +327,37 @@ class MemTableRepFactory : public Customizable {
   // false when if the <key,seq> already exists.
   // Default: false
   virtual bool CanHandleDuplicatedKey() const { return false; }
+  virtual bool IsPrepareMemtableSupported() const { return false; }
+
+
+
+void PrepareSwitchMemTable() {
+  for (;;) {
+    {
+      std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
+      while (switch_mem_.load(std::memory_order_acquire) != nullptr) {
+        if (terminate_switch_memtable_) {
+          return;
+        }
+
+        switch_memtable_thread_cv_.wait(lck);
+      }
+    }
+
+    // Construct new memtable with an empty initial sequence
+    switch_mem_.store(ConstructNewMemtable(mutable_cf_options_, 0),
+                      std::memory_order_release);
+  }
+}
+ private:
+
+  std::thread switch_memtable_thread_;
+  std::mutex switch_memtable_thread_mutex_;
+  std::condition_variable switch_memtable_thread_cv_;
+  bool terminate_switch_memtable_;
+  std::atomic<MemTable*> switch_mem_;  
+
+
 };
 
 // This uses a skip list to store keys. It is the default.
