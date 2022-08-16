@@ -294,7 +294,7 @@ class SortVector {
   char* smallest_key_;
   char* largest_key_;
   uint32_t size_limit_;
-  port::Mutex mutex_;
+  port::Mutex mutex_;git log
 };
 
 // SortVector implemntation
@@ -668,6 +668,8 @@ class HashLocklessRep : public MemTableRep {
                   Allocator* allocator, size_t bucket_size,
                   uint32_t add_vector_limit_size);
 
+  HashLocklessRep(size_t bucket_size);
+
   KeyHandle Allocate(const size_t len, char** buf) override;
 
   void Insert(KeyHandle handle) override;
@@ -867,6 +869,11 @@ HashLocklessRep::HashLocklessRep(const MemTableRep::KeyComparator& compare,
     : MemTableRep(allocator), bucket_size_(bucket_size), compare_(compare) {
   sort_vectors_cont_ =
       std::make_shared<SortVectorContainer>(compare, add_list_limit_size);
+  buckets_.reset(new BucketHeader[bucket_size]);
+}
+
+HashLocklessRep::HashLocklessRep(size_t bucket_size)
+    : MemTableRep(nullptr), bucket_size_(bucket_size){
   buckets_.reset(new BucketHeader[bucket_size]);
 }
 

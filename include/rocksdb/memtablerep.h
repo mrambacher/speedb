@@ -294,7 +294,7 @@ class MemTableRep {
 // new MemTableRep objects
 class MemTableRepFactory : public Customizable {
  public:
-  MemTableRepFactory() {
+  MemTableRepFactory(const ImmutableOptions ioptions) {
     switch_memtable_thread_ =
       std::thread(&MemTableRepFactory::PrepareSwitchMemTable, this);
   }
@@ -350,7 +350,7 @@ void PrepareSwitchMemTable() {
   }
 }
  private:
-
+  const ImmutableOptions ioptions_;
   std::thread switch_memtable_thread_;
   std::mutex switch_memtable_thread_mutex_;
   std::condition_variable switch_memtable_thread_cv_;
