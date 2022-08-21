@@ -30,7 +30,7 @@ class HashSpdRepFactory : public MemTableRepFactory {
                                  Allocator* allocator,
                                  const SliceTransform* transform,
                                  Logger* logger) override;
-  MemTableRep* PreCreateMemTableRep() override;
+  MemTableRep* PreCreateMemTableRep(const MemTableRep::KeyComparator& compare) override;
   void PostCreateMemTableRep(MemTableRep* memtable, const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
                                             const SliceTransform* slice_transform, Logger* logger) override;
 

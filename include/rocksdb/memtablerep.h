@@ -299,12 +299,23 @@ class MemTableRep {
 // new MemTableRep objects
 class MemTableRepFactory : public Customizable {
  public:
-  MemTableRepFactory() {
-    switch_memtable_thread_ =
-      std::thread(&MemTableRepFactory::PrepareSwitchMemTable, this);
-  }
+  MemTableRepFactory() : switch_memtable_thread_active_(false) {}
 
-  ~MemTableRepFactory() override {}
+  ~MemTableRepFactory() override {
+    if (IsPreCreateMemtableSupported()) {
+      {
+        std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
+        terminate_switch_memtable_ = true;
+      }
+      switch_memtable_thread_cv_.notify_one();
+      switch_memtable_thread_.join();
+
+      const MemTableRep* memtable = switch_mem_.exchange(nullptr);
+      if (memtable != nullptr) {
+        delete memtable;
+      }
+    }
+  }
 
   static const char* Type() { return "MemTableRepFactory"; }
   static Status CreateFromString(const ConfigOptions& config_options,
@@ -325,7 +336,7 @@ class MemTableRepFactory : public Customizable {
     }
   }
 
-  virtual MemTableRep* PreCreateMemTableRep() { return nullptr; };
+  virtual MemTableRep* PreCreateMemTableRep(const MemTableRep::KeyComparator& key_cmp) { return nullptr; };
   virtual void PostCreateMemTableRep(MemTableRep* memtable, const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
                                             const SliceTransform* slice_transform, Logger* logger) { return; };
 
@@ -344,7 +355,7 @@ class MemTableRepFactory : public Customizable {
   virtual bool IsPreCreateMemtableSupported() const { return false; }
 
 
-  void PrepareSwitchMemTable() {
+  void PrepareSwitchMemTable(const MemTableRep::KeyComparator& key_cmp) {
     for (;;) {
       {
         std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
@@ -358,7 +369,7 @@ class MemTableRepFactory : public Customizable {
       }
 
       // Construct new memtable only for the heavy object initilized proposed 
-      switch_mem_.store(PreCreateMemTableRep(),
+      switch_mem_.store(PreCreateMemTableRep(key_cmp),
                         std::memory_order_release);
     }
   }
@@ -366,7 +377,14 @@ class MemTableRepFactory : public Customizable {
   MemTableRep* GetSwitchMemtable(const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
                              const SliceTransform* slice_transform, Logger* logger) {
     MemTableRep* switch_mem = nullptr;
-
+    if (!switch_memtable_thread_active_) {
+      switch_memtable_thread_ =
+          std::thread(&MemTableRepFactory::PrepareSwitchMemTable, this, key_cmp);
+      switch_memtable_thread_active_ = true;    
+      switch_mem = CreateMemTableRep(key_cmp, allocator, slice_transform, logger);
+      return switch_mem;
+    }
+  
     {
       std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
       switch_mem = switch_mem_.exchange(nullptr, std::memory_order_release);
@@ -389,8 +407,7 @@ class MemTableRepFactory : public Customizable {
   std::condition_variable switch_memtable_thread_cv_;
   bool terminate_switch_memtable_;
   std::atomic<MemTableRep*> switch_mem_;  
-
-
+  bool switch_memtable_thread_active_;
 };
 
 // This uses a skip list to store keys. It is the default.
