@@ -44,7 +44,7 @@
 
 #include "rocksdb/customizable.h"
 #include "rocksdb/slice.h"
-
+#include <thread>
 namespace ROCKSDB_NAMESPACE {
 
 class Arena;
@@ -336,9 +336,9 @@ class MemTableRepFactory : public Customizable {
     }
   }
 
-  virtual MemTableRep* PreCreateMemTableRep(const MemTableRep::KeyComparator& key_cmp) { return nullptr; };
-  virtual void PostCreateMemTableRep(MemTableRep* memtable, const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
-                                            const SliceTransform* slice_transform, Logger* logger) { return; };
+  virtual void PostCreateMemTableRep(MemTableRep*, const MemTableRep::KeyComparator&,
+                                         Allocator*, const SliceTransform*,
+                                         Logger*) { return; };
 
 
   const char* Name() const override = 0;
@@ -369,7 +369,7 @@ class MemTableRepFactory : public Customizable {
       }
 
       // Construct new memtable only for the heavy object initilized proposed 
-      switch_mem_.store(PreCreateMemTableRep(key_cmp),
+      switch_mem_.store(CreateMemTableRep(key_cmp, nullptr, nullptr, nullptr),
                         std::memory_order_release);
     }
   }

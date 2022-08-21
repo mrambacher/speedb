@@ -981,9 +981,7 @@ static std::unordered_map<std::string, OptionTypeInfo> hash_spd_factory_info = {
 };
 }  // namespace
 
-MemTableRep* HashSpdRepFactory::PreCreateMemTableRep(const MemTableRep::KeyComparator& compare) {
-  return new HashLocklessRep(compare, nullptr, bucket_count_, 10000);
-}
+
 
 void HashSpdRepFactory::PostCreateMemTableRep(MemTableRep* memtable,     
                                               const MemTableRep::KeyComparator& compare, Allocator* allocator,
