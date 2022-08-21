@@ -664,8 +664,13 @@ void SortVectorContainer::Immutable() {
 
 class HashLocklessRep : public MemTableRep {
  public:
-  HashLocklessRep(const MemTableRep::KeyComparator& compare,
+  HashLocklessRep(MemTableRep::KeyComparator& compare,
                   Allocator* allocator, size_t bucket_size,
+                  uint32_t add_vector_limit_size);
+  HashLocklessRep(size_t bucket_size);
+
+  void PostCreate(const MemTableRep::KeyComparator& compare,
+                  Allocator* allocator,
                   uint32_t add_vector_limit_size);
 
   KeyHandle Allocate(const size_t len, char** buf) override;
@@ -699,7 +704,7 @@ class HashLocklessRep : public MemTableRep {
 
   std::unique_ptr<BucketHeader[]> buckets_;
 
-  const MemTableRep::KeyComparator& compare_;
+  MemTableRep::KeyComparator& compare_;
 
   std::shared_ptr<SortVectorContainer> sort_vectors_cont_;
 
@@ -861,7 +866,7 @@ class HashLocklessRep : public MemTableRep {
   };
 };
 
-HashLocklessRep::HashLocklessRep(const MemTableRep::KeyComparator& compare,
+HashLocklessRep::HashLocklessRep(MemTableRep::KeyComparator& compare,
                                  Allocator* allocator, size_t bucket_size,
                                  uint32_t add_list_limit_size)
     : MemTableRep(allocator), bucket_size_(bucket_size), compare_(compare) {
@@ -869,6 +874,23 @@ HashLocklessRep::HashLocklessRep(const MemTableRep::KeyComparator& compare,
       std::make_shared<SortVectorContainer>(compare, add_list_limit_size);
   buckets_.reset(new BucketHeader[bucket_size]);
 }
+
+HashLocklessRep::HashLocklessRep(size_t bucket_size)
+    : MemTableRep(), bucket_size_(bucket_size) {
+  buckets_.reset(new BucketHeader[bucket_size]);
+
+}
+
+void HashLocklessRep::PostCreate(const MemTableRep::KeyComparator& compare,
+                  Allocator* allocator,
+                  uint32_t add_list_limit_size) { 
+  MemTableRep::PostCreate(allocator);
+  compare_ = compare;
+  sort_vectors_cont_ =
+      std::make_shared<SortVectorContainer>(compare, add_list_limit_size);
+
+}
+
 
 KeyHandle HashLocklessRep::Allocate(const size_t len, char** buf) {
   char* mem = allocator_->AllocateAligned(sizeof(SortItem) + len);
@@ -974,33 +996,23 @@ static std::unordered_map<std::string, OptionTypeInfo> hash_spd_factory_info = {
 };
 }  // namespace
 
+MemTableRep* HashSpdRepFactory::PreCreateMemTableRep() {
+  return new HashLocklessRep(bucket_count_);
+}
+
+void HashSpdRepFactory::PostCreateMemTableRep(MemTableRep* memtable,     
+                                              const MemTableRep::KeyComparator& compare, Allocator* allocator,
+                                              const SliceTransform* /*transform*/, Logger* logger) {
+  memtable->PostCreate(compare, allocator, 10000);                                            
+}
+
+
 HashSpdRepFactory::HashSpdRepFactory(size_t bucket_count)
-    : bucket_count_(bucket_count) , 
-      terminate_switch_memtable_(false),
-      switch_mem_(nullptr) {
+    : bucket_count_(bucket_count){
   RegisterOptions("", &bucket_count_, &hash_spd_factory_info);
-  switch_memtable_thread_ =
-      std::thread(&ColumnFamilyData::PrepareSwitchMemTable, this);
 }
 
-void HashSpdRepFactory::PrepareSwitchMemTable() {
-  for (;;) {
-    {
-      std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
-      while (switch_mem_.load(std::memory_order_acquire) != nullptr) {
-        if (terminate_switch_memtable_) {
-          return;
-        }
 
-        switch_memtable_thread_cv_.wait(lck);
-      }
-    }
-
-    // Construct new memtable with an empty initial sequence
-    switch_mem_.store(ConstructNewMemtable(mutable_cf_options_, 0),
-                      std::memory_order_release);
-  }
-}
 
 MemTableRep* HashSpdRepFactory::CreateMemTableRep(
     const MemTableRep::KeyComparator& compare, Allocator* allocator,

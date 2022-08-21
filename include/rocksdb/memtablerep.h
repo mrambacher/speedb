@@ -83,7 +83,11 @@ class MemTableRep {
     virtual ~KeyComparator() {}
   };
 
-  explicit MemTableRep(Allocator* allocator) : allocator_(allocator) {}
+  explicit MemTableRep(Allocator* allocator) : allocator_(allocator), pre_create_(false) {}
+  // PreCreate propose!
+  explicit MemTableRep() : allocator_(nullptr), pre_create_(true) {}
+  // PostCreate propose!
+  virtual void PostCreate(Allocator* allocator) { assert(pre_create_); allocator_ = allocator; pre_create_ = false; }
 
   // Allocate a buf of len size for storing key. The idea is that a
   // specific memtable representation knows its underlying data structure
@@ -106,7 +110,7 @@ class MemTableRep {
     return true;
   }
 
-  // Same as Insert(), but in additional pass a hint to insert location for
+  // Same as Insert(), but in additional pass a hint to insert location for 
   // the key. If hint points to nullptr, a new hint will be populated.
   // otherwise the hint will be updated to reflect the last insert location.
   //
@@ -288,6 +292,7 @@ class MemTableRep {
   virtual Slice UserKey(const char* key) const;
 
   Allocator* allocator_;
+  bool pre_create_;
 };
 
 // This is the base class for all factories that are used by RocksDB to create
@@ -313,8 +318,17 @@ class MemTableRepFactory : public Customizable {
       const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
       const SliceTransform* slice_transform, Logger* logger,
       uint32_t /* column_family_id */) {
-    return CreateMemTableRep(key_cmp, allocator, slice_transform, logger);
+    if (IsPreCreateMemtableSupported()) {
+      return GetSwitchMemtable(key_cmp, allocator, slice_transform, logger);
+    } else {             
+      return CreateMemTableRep(key_cmp, allocator, slice_transform, logger);
+    }
   }
+
+  virtual MemTableRep* PreCreateMemTableRep() { return nullptr; };
+  virtual void PostCreateMemTableRep(MemTableRep* memtable, const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
+                                            const SliceTransform* slice_transform, Logger* logger) { return; };
+
 
   const char* Name() const override = 0;
 
@@ -327,35 +341,54 @@ class MemTableRepFactory : public Customizable {
   // false when if the <key,seq> already exists.
   // Default: false
   virtual bool CanHandleDuplicatedKey() const { return false; }
-  virtual bool IsPrepareMemtableSupported() const { return false; }
+  virtual bool IsPreCreateMemtableSupported() const { return false; }
 
 
+  void PrepareSwitchMemTable() {
+    for (;;) {
+      {
+        std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
+        while (switch_mem_.load(std::memory_order_acquire) != nullptr) {
+          if (terminate_switch_memtable_) {
+            return;
+          }
 
-void PrepareSwitchMemTable() {
-  for (;;) {
+          switch_memtable_thread_cv_.wait(lck);
+        }
+      }
+
+      // Construct new memtable only for the heavy object initilized proposed 
+      switch_mem_.store(PreCreateMemTableRep(),
+                        std::memory_order_release);
+    }
+  }
+
+  MemTableRep* GetSwitchMemtable(const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
+                             const SliceTransform* slice_transform, Logger* logger) {
+    MemTableRep* switch_mem = nullptr;
+
     {
       std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
-      while (switch_mem_.load(std::memory_order_acquire) != nullptr) {
-        if (terminate_switch_memtable_) {
-          return;
-        }
+      switch_mem = switch_mem_.exchange(nullptr, std::memory_order_release);
+    }
+    switch_memtable_thread_cv_.notify_one();
 
-        switch_memtable_thread_cv_.wait(lck);
-      }
+    if (switch_mem == nullptr) {
+      // No point in suspending, just construct the memtable here
+      switch_mem = CreateMemTableRep(key_cmp, allocator, slice_transform, logger);
+    } else {
+      PostCreateMemTableRep(switch_mem, key_cmp, allocator, slice_transform, logger);
     }
 
-    // Construct new memtable with an empty initial sequence
-    switch_mem_.store(ConstructNewMemtable(mutable_cf_options_, 0),
-                      std::memory_order_release);
-  }
-}
+    return switch_mem;
+  }  
  private:
 
   std::thread switch_memtable_thread_;
   std::mutex switch_memtable_thread_mutex_;
   std::condition_variable switch_memtable_thread_cv_;
   bool terminate_switch_memtable_;
-  std::atomic<MemTable*> switch_mem_;  
+  std::atomic<MemTableRep*> switch_mem_;  
 
 
 };

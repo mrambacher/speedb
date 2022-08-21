@@ -30,12 +30,18 @@ class HashSpdRepFactory : public MemTableRepFactory {
                                  Allocator* allocator,
                                  const SliceTransform* transform,
                                  Logger* logger) override;
+  MemTableRep* PreCreateMemTableRep() override;
+  void PostCreateMemTableRep(MemTableRep* memtable, const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
+                                            const SliceTransform* slice_transform, Logger* logger) override;
+
+                               
   bool IsInsertConcurrentlySupported() const override { return true; }
   bool CanHandleDuplicatedKey() const override { return true; }
+  bool IsPreCreateMemtableSupported() const override { return true; }
+
 
   static const char* kClassName() { return "speedb.HashSpdRepFactory"; }
   const char* Name() const override { return kClassName(); }
-  void PrepareSwitchMemTable();
  private:
   size_t bucket_count_;
  };
