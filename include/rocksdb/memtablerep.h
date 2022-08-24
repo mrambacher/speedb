@@ -308,8 +308,13 @@ class MemTableRepFactory : public Customizable {
       const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
       const SliceTransform* slice_transform, Logger* logger,
       uint32_t /* column_family_id */) {
-    return CreateMemTableRep(key_cmp, allocator, slice_transform, logger);
+    if (CanPrepareMemtableCreation()) {
+      GetSwitchMemtable(key_cmp, allocator, slice_transform, logger);
+    } else {
+      return CreateMemTableRep(key_cmp, allocator, slice_transform, logger);
+    }
   }
+  virtual bool CanPrepareMemtableCreation() const { return false; }
 
   const char* Name() const override = 0;
 
@@ -322,6 +327,60 @@ class MemTableRepFactory : public Customizable {
   // false when if the <key,seq> already exists.
   // Default: false
   virtual bool CanHandleDuplicatedKey() const { return false; }
+  // Return true if the current MemTableRep supports prepare memtable creation
+  // note that if is does the memtable contruction MUST NOT use any arena allocation!!!
+  // Default: false
+  virtual void PostCreate(MemTableRep* switch_mem, const MemTableRep::KeyComparator& key_cmp, 
+      Allocator* allocator, const SliceTransform* slice_transform, Logger* logger) {}
+private:
+
+MemTableRep* CreateInternalMemTableRep() {
+  return new HashLocklessRep(bucket_count_, 10000);
+}
+
+void PrepareSwitchMemTable() {
+  for (;;) {
+    {
+      std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
+      while (switch_mem_.load(std::memory_order_acquire) != nullptr) {
+        if (terminate_switch_memtable_) {
+          return;
+        }
+
+        switch_memtable_thread_cv_.wait(lck);
+      }
+    }
+
+    // Construct new memtable only for the heavy object initilized proposed
+
+    switch_mem_.store(CreateInternalMemTableRep(), std::memory_order_release);
+  }
+}
+
+MemTableRep* GetSwitchMemtable(
+    const MemTableRep::KeyComparator& key_cmp, Allocator* allocator,
+      const SliceTransform* slice_transform, Logger* logger) {
+  MemTableRep* switch_mem = nullptr;
+  {
+    std::unique_lock<std::mutex> lck(switch_memtable_thread_mutex_);
+    switch_mem = switch_mem_.exchange(nullptr, std::memory_order_release);
+  }
+  switch_memtable_thread_cv_.notify_one();
+
+  if (switch_mem == nullptr) {
+    // No point in suspending, just construct the memtable here
+    switch_mem = CreateMemTableRep(key_cmp, allocator, slice_transform, logger);
+  } else {
+    static_cast<HashLocklessRep*>(switch_mem)->PostCreate(compare, allocator);
+  }
+  return switch_mem;
+}
+ private:
+  std::thread switch_memtable_thread_;
+  std::mutex switch_memtable_thread_mutex_;
+  std::condition_variable switch_memtable_thread_cv_;
+  bool terminate_switch_memtable_;
+  std::atomic<MemTableRep*> switch_mem_ = nullptr;  
 };
 
 // This uses a skip list to store keys. It is the default.
