@@ -42,7 +42,9 @@ DBOptions SanitizeOptions(const std::string& dbname, const DBOptions& src,
   if (result.env == nullptr) {
     result.env = Env::Default();
   }
-
+  if (read_only) {
+    result.avoid_unnecessary_blocking_io = false;
+  }
   // result.max_open_files means an "infinite" open files.
   if (result.max_open_files != -1) {
     int max_max_open_files = port::GetMaxOpenFiles();
