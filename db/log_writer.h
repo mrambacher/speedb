@@ -83,8 +83,10 @@ class Writer {
 
   ~Writer();
 
-  IOStatus AddRecord(const Slice& slice,
-                     Env::IOPriority rate_limiter_priority = Env::IO_TOTAL);
+   IOStatus AddRecord(const Slice& slice,
+                     Env::IOPriority rate_limiter_priority = Env::IO_TOTAL,
+                     bool do_flush = true);
+                    
   IOStatus AddCompressionTypeRecord();
 
   WritableFileWriter* file() { return dest_.get(); }

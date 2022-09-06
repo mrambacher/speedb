@@ -41,10 +41,11 @@ class SpdbWriteImpl {
   void NotifyIfActionNeeded();
   void WaitForWalWriteComplete(void* list);
   void SwitchAndWriteBatchGroup();
-  void WriteBatchComplete(void* list, bool leader_batch);
+  void WriteBatchComplete(void* list, WriteBatch* batch, bool leader_batch);
   port::RWMutexWr& GetFlushRWLock() { return flush_rwlock_; }
   void Lock(bool is_read);
   void Unlock(bool is_read);
+  void WaitForWalWrite(WriteBatch* batch);
 
  private:
   struct WritesBatchList {
@@ -65,15 +66,19 @@ class SpdbWriteImpl {
     uint64_t GetMaxSeq() const { return max_seq_; }
     void WaitForPendingWrites();
 
-    void WriteBatchComplete(bool leader_batch, DBImpl* db);
+    void WriteBatchComplete(bool leader_batch);
   };
+
+
+  uint64_t GetLasPublishedSeq() {
+    return last_published_seq_.load(std::memory_order_acquire);
+  }  
 
   WritesBatchList& SwitchBatchGroup();
 
   WritesBatchList& GetActiveList() { return wb_lists_[active_buffer_index_]; }
   static constexpr size_t kWalWritesContainers = 2;
 
-  std::atomic<uint64_t> last_wal_write_seq_{0};
 
   std::array<WritesBatchList, kWalWritesContainers> wb_lists_;
   size_t active_buffer_index_ = 0;
@@ -89,7 +94,16 @@ class SpdbWriteImpl {
   std::thread flush_thread_;
   port::RWMutexWr wal_buffers_rwlock_;
   port::Mutex wal_write_mutex_;
+  port::Mutex complete_mutex_;
   WriteBatch tmp_batch_;
+  std::mutex notify_wal_write_mutex_;
+  std::condition_variable notify_wal_write_cv_;
+  std::atomic<size_t> threads_busy_waiting_{0};
+  std::atomic<uint64_t> last_published_seq_{0};
+  std::atomic<uint64_t> last_wal_write_seq_{0};
+
+
+
 };
 
 }  // namespace ROCKSDB_NAMESPACE

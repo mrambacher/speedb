@@ -24,6 +24,11 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+constexpr size_t kMaxSpinThreadCount = 256;
+constexpr size_t kMaxSpinCount = 100000;
+constexpr uint64_t kMaxSpinTimeMicros = 1000;
+
+
 // add_buffer_mutex_ is held
 void SpdbWriteImpl::WritesBatchList::Add(WriteBatch* batch, const WriteOptions& write_options,
                                          bool* leader_batch) {
@@ -39,14 +44,13 @@ void SpdbWriteImpl::WritesBatchList::Add(WriteBatch* batch, const WriteOptions& 
   if (empty_) {
     // first wal batch . should take the buffer_write_rw_lock_ as write
     *leader_batch = true;
-    buffer_write_rw_lock_.WriteLock();
+    //buffer_write_rw_lock_.WriteLock();
     empty_ = false;
   }
   write_ref_rwlock_.ReadLock();
 }
 
-void SpdbWriteImpl::WritesBatchList::WriteBatchComplete(bool leader_batch,
-                                                        DBImpl* db) {
+void SpdbWriteImpl::WritesBatchList::WriteBatchComplete(bool leader_batch) {
   // Batch was added to the memtable, we can release the memtable_ref.
   write_ref_rwlock_.ReadUnlock();
   if (leader_batch) {
@@ -55,13 +59,11 @@ void SpdbWriteImpl::WritesBatchList::WriteBatchComplete(bool leader_batch,
       // the version
       WriteLock wl(&write_ref_rwlock_);
     }
+   /*
     db->SetLastSequence(max_seq_);
     // wal write has been completed wal waiters will be released
-    buffer_write_rw_lock_.WriteUnlock();
-  } else {
-    // wait wal write completed
-    ReadLock rl(&buffer_write_rw_lock_);
-  }
+    buffer_write_rw_lock_.WriteUnlock();*/
+  } 
 }
 
 void SpdbWriteImpl::WritesBatchList::WaitForPendingWrites() {
@@ -70,12 +72,13 @@ void SpdbWriteImpl::WritesBatchList::WaitForPendingWrites() {
   WriteLock wl(&write_ref_rwlock_);
 }
 
-void SpdbWriteImpl::WriteBatchComplete(void* list, bool leader_batch) {
+void SpdbWriteImpl::WriteBatchComplete(void* list, WriteBatch* batch, bool leader_batch) {
   if (leader_batch) {
     SwitchAndWriteBatchGroup();
   } else {
     WritesBatchList* write_batch_list = static_cast<WritesBatchList*>(list);
-    write_batch_list->WriteBatchComplete(false, db_);
+    write_batch_list->WriteBatchComplete(false);
+    WaitForWalWrite(batch);
   }
 }
 
@@ -234,85 +237,152 @@ SpdbWriteImpl::WritesBatchList& SpdbWriteImpl::SwitchBatchGroup() {
   return batch_group;
 }
 
-void SpdbWriteImpl::SwitchAndWriteBatchGroup() {
-  // take the wal write rw lock from protecting another batch group wal write
-  MutexLock l(&wal_write_mutex_);
-  NotifyIfActionNeeded();
-  WritesBatchList& batch_group = SwitchBatchGroup();
-  if (!batch_group.wal_writes_.empty()) {
-    auto const& immutable_db_options = db_->immutable_db_options();
-    StopWatch write_sw(immutable_db_options.clock, immutable_db_options.stats,
-                       DB_WAL_WRITE_TIME);
+void SpdbWriteImpl::WaitForWalWrite(WriteBatch* batch) {
+  const uint64_t last_sequence = WriteBatchInternal::Sequence(batch) +
+                                 WriteBatchInternal::Count(batch) - 1;
 
-    const WriteBatch* to_be_cached_state = nullptr;
-    IOStatus io_s;
-    if (batch_group.wal_writes_.size() == 1 && batch_group.wal_writes_.front()
-                                                   ->GetWalTerminationPoint()
-                                                   .is_cleared()) {
-      WriteBatch* wal_batch = batch_group.wal_writes_.front();
+  SystemClock* clock = db_->GetSystemClock();
+  Statistics* stats = db_->immutable_db_options().stats;
 
-      if (WriteBatchInternal::IsLatestPersistentState(wal_batch)) {
-        to_be_cached_state = wal_batch;
+  StopWatch sw1(clock, stats, DB_WRITE_WAIT_FOR_WAL);
+
+  bool done = false;
+
+  // Don't busy wait if we have too many spinning threads already
+  if (++threads_busy_waiting_ <= kMaxSpinThreadCount) {
+    const uint64_t spin_start = clock->NowMicros();
+
+    for (size_t spin_count = 0; spin_count < kMaxSpinCount; ++spin_count) {
+      if (GetLasPublishedSeq() >= last_sequence) {
+        done = true;
+        break;
       }
-      io_s = db_->SpdbWriteToWAL(wal_batch, 1, to_be_cached_state);
-    } else {
-      uint64_t progress_batch_seq;
-      size_t wal_writes = 0;
-      WriteBatch* merged_batch = &tmp_batch_;
-      for (const WriteBatch* batch : batch_group.wal_writes_) {
-        if (wal_writes != 0 &&
-            (progress_batch_seq != WriteBatchInternal::Sequence(batch))) {
-          // this can happened if we have a batch group that consists no wal
-          // writes... need to divide the wal writes when the seq is broken
-          io_s =
-              db_->SpdbWriteToWAL(merged_batch, wal_writes, to_be_cached_state);
-          // reset counter and state
-          tmp_batch_.Clear();
-          wal_writes = 0;
-          to_be_cached_state = nullptr;
-          if (!io_s.ok()) {
-            // TBD what todo with error
-            break;
-          }
-        }
-        if (wal_writes == 0) {
-          // first batch seq to use when we will replay the wal after recovery
-          WriteBatchInternal::SetSequence(merged_batch,
-                                          WriteBatchInternal::Sequence(batch));
-        }
-        // to be able knowing the batch are in seq order
-        progress_batch_seq =
-            WriteBatchInternal::Sequence(batch) + batch->Count();
-        Status s = WriteBatchInternal::Append(merged_batch, batch, true);
-        // Always returns Status::OK.()
-        if (!s.ok()) {
-          assert(false);
-        }
-        if (WriteBatchInternal::IsLatestPersistentState(batch)) {
-          // We only need to cache the last of such write batch
-          to_be_cached_state = batch;
-        }
-        ++wal_writes;
-      }
-      if (wal_writes) {
-        io_s =
-            db_->SpdbWriteToWAL(merged_batch, wal_writes, to_be_cached_state);
-        tmp_batch_.Clear();
-      }
-    }
-    if (!io_s.ok()) {
-      // TBD what todo with error
-      ROCKS_LOG_ERROR(db_->immutable_db_options().info_log,
-                      "Error write to wal!!! %s", io_s.ToString().c_str());
-    } else {
-      if (batch_group.need_sync_) {
-        db_->SpdbSyncWAL();
+
+      std::this_thread::yield();
+
+      if (clock->NowMicros() - spin_start >= kMaxSpinTimeMicros) {
+        break;
       }
     }
   }
 
-  batch_group.WriteBatchComplete(true, db_);
-  batch_group.Clear();
+  --threads_busy_waiting_;
+
+  if (!done) {
+    StopWatch sw2(clock, stats, DB_WRITE_WAIT_FOR_WAL_WITH_MUTEX);
+
+    std::unique_lock<std::mutex> wal_wait_lck(notify_wal_write_mutex_);
+    while (GetLasPublishedSeq() < last_sequence) {
+      notify_wal_write_cv_.wait(wal_wait_lck);
+    }
+  }
+
+  return;
+}
+
+
+
+void SpdbWriteImpl::SwitchAndWriteBatchGroup() {
+  bool need_sync = false;
+  uint64_t written_seq = 0;
+  {
+    // take the wal write rw lock from protecting another batch group wal write
+    MutexLock l(&wal_write_mutex_);
+    NotifyIfActionNeeded();
+    WritesBatchList& batch_group = SwitchBatchGroup();
+    written_seq = batch_group.max_seq_;
+
+    if (!batch_group.wal_writes_.empty()) {
+      need_sync = batch_group.need_sync_;
+      auto const& immutable_db_options = db_->immutable_db_options();
+      StopWatch write_sw(immutable_db_options.clock, immutable_db_options.stats,
+                        DB_WAL_WRITE_TIME);
+
+      const WriteBatch* to_be_cached_state = nullptr;
+      IOStatus io_s;
+      if (batch_group.wal_writes_.size() == 1 && batch_group.wal_writes_.front()
+                                                    ->GetWalTerminationPoint()
+                                                    .is_cleared()) {
+        WriteBatch* wal_batch = batch_group.wal_writes_.front();
+
+        if (WriteBatchInternal::IsLatestPersistentState(wal_batch)) {
+          to_be_cached_state = wal_batch;
+        }
+        io_s = db_->SpdbWriteToWAL(wal_batch, 1, to_be_cached_state, !need_sync);
+      } else {
+        uint64_t progress_batch_seq;
+        size_t wal_writes = 0;
+        WriteBatch* merged_batch = &tmp_batch_;
+        for (const WriteBatch* batch : batch_group.wal_writes_) {
+          if (wal_writes != 0 &&
+              (progress_batch_seq != WriteBatchInternal::Sequence(batch))) {
+            // this can happened if we have a batch group that consists no wal
+            // writes... need to divide the wal writes when the seq is broken
+            io_s =
+                db_->SpdbWriteToWAL(merged_batch, wal_writes, to_be_cached_state, !need_sync);
+            // reset counter and state
+            tmp_batch_.Clear();
+            wal_writes = 0;
+            to_be_cached_state = nullptr;
+            if (!io_s.ok()) {
+              // TBD what todo with error
+              break;
+            }
+          }
+          if (wal_writes == 0) {
+            // first batch seq to use when we will replay the wal after recovery
+            WriteBatchInternal::SetSequence(merged_batch,
+                                            WriteBatchInternal::Sequence(batch));
+          }
+          // to be able knowing the batch are in seq order
+          progress_batch_seq =
+              WriteBatchInternal::Sequence(batch) + batch->Count();
+          Status s = WriteBatchInternal::Append(merged_batch, batch, true);
+          // Always returns Status::OK.()
+          if (!s.ok()) {
+            assert(false);
+          }
+          if (WriteBatchInternal::IsLatestPersistentState(batch)) {
+            // We only need to cache the last of such write batch
+            to_be_cached_state = batch;
+          }
+          ++wal_writes;
+        }
+        if (wal_writes) {
+          io_s =
+              db_->SpdbWriteToWAL(merged_batch, wal_writes, to_be_cached_state, !need_sync);
+          tmp_batch_.Clear();
+        }
+      }
+      if (!io_s.ok()) {
+        // TBD what todo with error
+        ROCKS_LOG_ERROR(db_->immutable_db_options().info_log,
+                        "Error write to wal!!! %s", io_s.ToString().c_str());
+      } else {
+        if (batch_group.need_sync_) {
+          db_->SpdbSyncWAL();
+        }
+      }
+    }
+
+    batch_group.WriteBatchComplete(true);
+    batch_group.Clear();
+    last_wal_write_seq_ = written_seq;
+  }
+  {
+    MutexLock complete_lock(&complete_mutex_);
+    if (last_wal_write_seq_ == written_seq) {
+      if (need_sync) {
+        db_->SpdbSyncWAL();
+      }
+      {
+        std::unique_lock<std::mutex> notify_lock(notify_wal_write_mutex_);
+        last_published_seq_.store(written_seq, std::memory_order_release);
+      }
+      notify_wal_write_cv_.notify_all();  
+      db_->SetLastSequence(last_published_seq_);
+    }
+  }
 }
 
 Status DBImpl::SpdbWrite(const WriteOptions& write_options, WriteBatch* batch,
@@ -359,7 +429,7 @@ Status DBImpl::SpdbWrite(const WriteOptions& write_options, WriteBatch* batch,
   }
 
   // handle !status.ok()
-  spdb_write_->WriteBatchComplete(list, leader_batch);
+  spdb_write_->WriteBatchComplete(list, batch, leader_batch);
   spdb_write_->Unlock(true);
 
   return status;
@@ -398,7 +468,7 @@ IOStatus DBImpl::SpdbSyncWAL() {
   return io_s;
 }
 IOStatus DBImpl::SpdbWriteToWAL(WriteBatch* merged_batch, size_t write_with_wal,
-                                const WriteBatch* to_be_cached_state) {
+                                const WriteBatch* to_be_cached_state, bool do_flush) {
   assert(merged_batch != nullptr || write_with_wal == 0);
   IOStatus io_s;
 
@@ -408,7 +478,7 @@ IOStatus DBImpl::SpdbWriteToWAL(WriteBatch* merged_batch, size_t write_with_wal,
   {
     InstrumentedMutexLock l(&log_write_mutex_);
     log::Writer* log_writer = logs_.back().writer;
-    io_s = log_writer->AddRecord(log_entry);
+    io_s = log_writer->AddRecord(log_entry, Env::IO_TOTAL, do_flush);
   }
 
   total_log_size_ += log_entry_size;

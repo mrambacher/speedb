@@ -55,8 +55,9 @@ IOStatus Writer::Close() {
   return s;
 }
 
+
 IOStatus Writer::AddRecord(const Slice& slice,
-                           Env::IOPriority rate_limiter_priority) {
+                           Env::IOPriority rate_limiter_priority, bool do_flush) {
   const char* ptr = slice.data();
   size_t left = slice.size();
 
@@ -143,7 +144,7 @@ IOStatus Writer::AddRecord(const Slice& slice,
   } while (s.ok() && (left > 0 || compress_remaining > 0));
 
   if (s.ok()) {
-    if (!manual_flush_) {
+    if (!manual_flush_ && do_flush) {
       s = dest_->Flush(rate_limiter_priority);
     }
   }
