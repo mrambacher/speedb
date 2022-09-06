@@ -14,9 +14,12 @@ endif
 ifeq ($(TEST_TMPDIR),)
 TEST_TMPDIR := $(TMPD)
 endif
-# Avoid setting up the tmp directory on Makefile restarts or when the target
-# isn't a check target
-ifeq ($(MAKE_RESTARTS),)
+
+# If neither TEST_TMPDIR nor TMPD were specified, try to load TEST_TMPDIR
+# from a previous run as saved in test_config.mk
+-include test_config.mk
+
+# Avoid setting up the tmp directory when the target isn't a check target
 ifneq ($(filter %check,$(MAKECMDGOALS)),)
 
 ifeq ($(TEST_TMPDIR),)
@@ -36,7 +39,7 @@ endif
 
 # The `export` line below doesn't work in case Make restarts (due to included
 # makefiles getting remade), so we need to output the directory we created into
-# a temporary config file that will be included by the `include` directive below
+# a temporary config file that will be included by the `include` directive above
 # in case of a restart (we don't want to output it into make_config.mk in order
 # to avoid having the TEST_TMPDIR implicitly set for test that are run through
 # makefiles that include make_config.mk, and because we don't want to change
@@ -44,8 +47,8 @@ endif
 $(shell echo 'TEST_TMPDIR?=$(TEST_TMPDIR)' > test_config.mk)
 
 endif
-endif
 
--include test_config.mk
-
+# Export TEST_TMPDIR if not empty
+ifneq ($(TEST_TMPDIR),)
 export TEST_TMPDIR
+endif

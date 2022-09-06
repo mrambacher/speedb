@@ -988,7 +988,7 @@ valgrind_check_0: gen_parallel_tests
 	   '(if [[ "{}" == "./"* ]] ; then $(DRIVER) {}; else {}; fi) \
 	  $(parallel_redir)' \
 
-CLEAN_FILES += t LOG $(TEST_TMPDIR)
+CLEAN_FILES += t LOG
 
 # When running parallel "make check", you can monitor its progress
 # from another window.
@@ -2311,7 +2311,7 @@ rocksdbjavastaticnexusbundlejar: rocksdbjavageneratepom
 # A version of each $(LIBOBJECTS) compiled with -fPIC
 
 jl/%.o: %.cc
-	$(AM_V_CC)mkdir -p $(@D) && $(CXX) $(CXXFLAGS) -fPIC -c $< -o $@ $(COVERAGEFLAGS)
+	$(AM_V_CC)mkdir -p $(@D) && $(CCACHE) $(CXX) $(CXXFLAGS) -fPIC -c $< -o $@ $(COVERAGEFLAGS)
 
 rocksdbjava: $(LIB_OBJECTS)
 ifeq ($(JAVA_HOME),)
@@ -2392,19 +2392,19 @@ IOSVERSION=$(shell defaults read $(PLATFORMSROOT)/iPhoneOS.platform/version CFBu
 else
 ifeq ($(HAVE_POWER8),1)
 $(OBJ_DIR)/util/crc32c_ppc.o: util/crc32c_ppc.c
-	$(AM_V_CC)$(CC) $(CFLAGS) -c $< -o $@
+	$(AM_V_CC)$(CCACHE) $(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/util/crc32c_ppc_asm.o: util/crc32c_ppc_asm.S
-	$(AM_V_CC)$(CC) $(CFLAGS) -c $< -o $@
+	$(AM_V_CC)$(CCACHE) $(CC) $(CFLAGS) -c $< -o $@
 endif
 $(OBJ_DIR)/%.o: %.cc
-	$(AM_V_CC)mkdir -p $(@D) && $(CXX) $(CXXFLAGS) -c $< -o $@ $(COVERAGEFLAGS)
+	$(AM_V_CC)mkdir -p $(@D) && $(CCACHE) $(CXX) $(CXXFLAGS) -c $< -o $@ $(COVERAGEFLAGS)
 
 $(OBJ_DIR)/%.o: %.cpp
-	$(AM_V_CC)mkdir -p $(@D) && $(CXX) $(CXXFLAGS) -c $< -o $@ $(COVERAGEFLAGS)
+	$(AM_V_CC)mkdir -p $(@D) && $(CCACHE) $(CXX) $(CXXFLAGS) -c $< -o $@ $(COVERAGEFLAGS)
 
 $(OBJ_DIR)/%.o: %.c
-	$(AM_V_CC)$(CC) $(CFLAGS) -c $< -o $@
+	$(AM_V_CC)$(CCACHE) $(CC) $(CFLAGS) -c $< -o $@
 endif
 
 # ---------------------------------------------------------------------------
@@ -2413,7 +2413,7 @@ endif
 # If skip dependencies is ON, skip including the dep files
 ifneq ($(SKIP_DEPENDS), 1)
 DEPFILES = $(patsubst %.cc, $(OBJ_DIR)/%.cc.d, $(ALL_SOURCES))
-DEPFILES+ = $(patsubst %.c, $(OBJ_DIR)/%.c.d, $(LIB_SOURCES_C) $(TEST_MAIN_SOURCES_C))
+DEPFILES += $(patsubst %.c, $(OBJ_DIR)/%.c.d, $(LIB_SOURCES_C) $(TEST_MAIN_SOURCES_C))
 ifeq ($(USE_FOLLY),1)
   DEPFILES +=$(patsubst %.cpp, $(OBJ_DIR)/%.cpp.d, $(FOLLY_SOURCES))
 endif

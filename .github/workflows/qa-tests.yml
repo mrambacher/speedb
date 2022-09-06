@@ -2,55 +2,114 @@ name: QA Tests
 
 on:
   workflow_dispatch:
+    inputs:
+      duration:
+        description: "Crash test duration in seconds (optional)"
+        required: false
   workflow_call:
 
-env:
-  GTEST_COLOR: 1
-  GTEST_THROW_ON_FAILURE: 0
-  SKIP_FORMAT_BUCK_CHECKS: 1
+permissions:
+  contents: read
 
 jobs:
-  test:
+  unit_tests:
     runs-on: [self-hosted, ubuntu, asrunner]
+
     container:
-      image: ubuntu:18.04
+      image: ubuntu:22.04
       volumes:
         - /var/tmp:/var/tmp # Needed for env_test's IoctlFriendlyTmpdir
         - /tmp:/tmp # Needed for running tests on non-overlayfs (can't use /dev/shm because there's not enough RAM on the runner)
-    strategy:
-      matrix:
-        include:
-          - name: Unit tests
-            short_test: TMPD="$(mktemp -d /tmp/speedb.XXXX)" make -j$(nproc) check
-            long_test: TMPD="$(mktemp -d /tmp/speedb.XXXX)" make -j$(nproc) check
-          - name: black-box
-            short_test: CRASH_TEST_EXT_ARGS="--duration=500" make -j$(nproc) blackbox_asan_crash_test
-            long_test: CRASH_TEST_EXT_ARGS="--duration=10000" make -j$(nproc) blackbox_asan_crash_test
-          - name: white-box
-            short_test: CRASH_TEST_EXT_ARGS="--duration=500" make -j$(nproc) whitebox_asan_crash_test
-            long_test: CRASH_TEST_EXT_ARGS="--duration=10000" make -j$(nproc) whitebox_asan_crash_test
-    
+
     steps:
-      - name: Network hotfix
-        run: echo "nameserver 8.8.8.8" > /etc/resolv.conf
-    
-      - name: Pre
+      - name: pre
         run: |
+          echo "nameserver 8.8.8.8" > /etc/resolv.conf
           apt update -y
-          apt install -y build-essential clang-format parallel libgflags-dev liblz4-dev libsnappy-dev libzstd-dev python3 python3-pip curl
+          apt install -y git-core build-essential ccache mold parallel libgflags-dev zlib1g-dev liblz4-dev libsnappy-dev libzstd-dev python3
+          update-alternatives --install /usr/bin/ld ld /usr/bin/mold 100
+
+      - name: Fetch build cache
+        uses: actions/cache@v3
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-unit-tests-build-ccache
+
+      - run: |
+          mkdir -p ~/.ccache
+          echo "CCACHE_BASEDIR=$HOME" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=512M" >> $GITHUB_ENV
 
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: ${{ matrix.name }}
+      - name: check
         run: |
-          case "$GITHUB_REF_NAME" in
-            release/*)
-              echo "Running long test for release, $(nproc) jobs"
-              make clean && ${{ matrix.long_test }}
-              ;;
-            *)
-              echo "Running short test, $(nproc) jobs"
-              make clean && ${{ matrix.short_test }}
-              ;;
-          esac
+          export TMPD=$(mktemp -d /tmp/speedb.unit-tests.XXXX)
+          export GTEST_COLOR=1
+          export GTEST_THROW_ON_FAILURE=0
+          export J=$(if [ "$(nproc)" -lt 8 ]; then echo 8; else nproc; fi)
+          SKIP_FORMAT_BUCK_CHECKS=1 make -j$(nproc) check
+          rm -rf "$TMPD"
+
+  crash_tests:
+    needs: [unit_tests]
+    runs-on: [self-hosted, ubuntu, asrunner]
+
+    container:
+      image: ubuntu:22.04
+
+    strategy:
+      matrix:
+        crash_type: [blackbox, whitebox]
+
+    steps:
+      - name: Verify duration
+        run: |
+          if ! echo "${{ inputs.duration }}" | grep -q "^[0-9]*$"; then
+            echo >&2 "error: test duration must be a positive number" && false
+          fi
+
+      - name: pre
+        run: |
+          echo "nameserver 8.8.8.8" > /etc/resolv.conf
+          apt update -y
+          apt install -y git-core build-essential ccache libgflags-dev zlib1g-dev liblz4-dev libsnappy-dev libzstd-dev python3
+
+      - name: Fetch build cache
+        uses: actions/cache@v3
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-crash-tests-build-ccache
+
+      - run: |
+          mkdir -p ~/.ccache
+          echo "CCACHE_BASEDIR=$HOME" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=512M" >> $GITHUB_ENV
+
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Run ${{ matrix.crash_type }} crash test
+        run: |
+          if [ -n "${{ inputs.duration }}" ]; then
+            duration=${{ inputs.duration }}
+          else
+            case "$GITHUB_REF_NAME" in
+              release/*)
+                echo "Running long test for release"
+                duration=10000
+                ;;
+              *)
+                echo "Running short test"
+                duration=500
+                ;;
+            esac
+          fi
+          export TEST_TMPDIR=$(mktemp -d /tmp/speedb.crash-test.XXXX)
+          CRASH_TEST_EXT_ARGS="--duration=${duration}" PORTABLE=1 make -j$(nproc) ${{ matrix.crash_type }}_asan_crash_test
+          rm -rf "$(TEST_TMPDIR)"
