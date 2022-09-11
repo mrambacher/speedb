@@ -8,6 +8,8 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "rocksdb/write_buffer_manager.h"
+
+#include "rocksdb/cache.h"
 #include "test_util/testharness.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -293,6 +295,233 @@ TEST_F(WriteBufferManagerTest, CacheFull) {
 }
 
 #endif  // ROCKSDB_LITE
+
+#define VALIDATE_NOTIFICATION(memory_change_size, expected_state,    \
+                              expected_factor, expect_notification)  \
+  ValidateNotification(__LINE__, memory_change_size, expected_state, \
+                       expected_factor, expect_notification)
+
+class WriteBufferManagerTestWithParms
+    : public WriteBufferManagerTest,
+      public ::testing::WithParamInterface<std::tuple<bool, bool, bool, bool>> {
+ public:
+  void SetUp() override {
+    wbm_enabled_ = std::get<0>(GetParam());
+    cost_cache_ = std::get<1>(GetParam());
+    allow_stall_ = std::get<2>(GetParam());
+    allow_delay_ = std::get<3>(GetParam());
+  }
+
+  bool wbm_enabled_;
+  bool cost_cache_;
+  bool allow_stall_;
+  bool allow_delay_;
+};
+
+// Test that the write buffer manager sends the expected usage notifications
+TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
+  constexpr size_t kQuota = 10 * 1000;
+  constexpr size_t kStepSize = kQuota / 100;
+  constexpr size_t kDelayThreshold =
+      WriteBufferManager::kStartDelayPercentThreshold * kQuota / 100;
+  constexpr size_t kMaxUsed = kQuota - kDelayThreshold;
+
+  std::shared_ptr<Cache> cache = NewLRUCache(4 * 1024 * 1024, 2);
+
+  std::unique_ptr<WriteBufferManager> wbf;
+
+  auto wbm_quota = (wbm_enabled_ ? kQuota : 0U);
+  if (cost_cache_) {
+    wbf.reset(
+        new WriteBufferManager(wbm_quota, cache, allow_stall_, allow_delay_));
+  } else {
+    wbf.reset(
+        new WriteBufferManager(wbm_quota, nullptr, allow_stall_, allow_delay_));
+  }
+  ASSERT_EQ(wbf->enabled(), wbm_enabled_);
+
+  WriteBufferManager::UsageState last_notification_type =
+      WriteBufferManager::UsageState::kNone;
+  uint64_t last_notification_delay_factor = 0U;
+  size_t num_notifications = 0U;
+
+  constexpr uint64_t kInvalidDelayFactor = std::numeric_limits<uint64_t>::max();
+  auto ResetNotificationInfo = [&]() {
+    last_notification_type = WriteBufferManager::UsageState::kNone;
+    last_notification_delay_factor = kInvalidDelayFactor;
+  };
+
+  auto UsageCb = [&](WriteBufferManager::UsageState type,
+                     uint64_t delay_factor) {
+    last_notification_type = type;
+    last_notification_delay_factor = delay_factor;
+    ++num_notifications;
+  };
+
+  size_t expected_num_notifications = 0U;
+  size_t expected_usage = 0U;
+  auto ExpectedDelayFactor = [&](uint64_t extra_used) {
+    return (extra_used * WriteBufferManager::kMaxDelayedWriteFactor) / kMaxUsed;
+  };
+
+  auto ValidateNotification = [&](unsigned long line, size_t memory_change_size,
+                                  WriteBufferManager::UsageState expected_state,
+                                  uint64_t expected_factor,
+                                  bool expect_notification) {
+    const auto location_str =
+        "write_buffer_manager_test.cc:" + std::to_string(line) + "\n";
+
+    if (wbm_enabled_ || cost_cache_) {
+      expected_usage += memory_change_size;
+    }
+    ASSERT_EQ(wbf->memory_usage(), expected_usage) << location_str;
+
+    if (wbm_enabled_ && allow_delay_) {
+      ASSERT_EQ(last_notification_type, expected_state) << location_str;
+      ASSERT_EQ(last_notification_delay_factor, expected_factor)
+          << location_str;
+      if (expect_notification) {
+        ++expected_num_notifications;
+      }
+      ASSERT_EQ(num_notifications, expected_num_notifications) << location_str;
+    } else {
+      ASSERT_EQ(last_notification_type, WriteBufferManager::UsageState::kNone)
+          << location_str;
+      ASSERT_EQ(last_notification_delay_factor, kInvalidDelayFactor)
+          << location_str;
+      ASSERT_EQ(num_notifications, 0U) << location_str;
+    }
+
+    ResetNotificationInfo();
+  };
+
+  ResetNotificationInfo();
+  VALIDATE_NOTIFICATION(0, WriteBufferManager::UsageState::kNone,
+                        kInvalidDelayFactor, false);
+
+  // Verify no notifications before registering
+  wbf->ReserveMem(kQuota);
+  VALIDATE_NOTIFICATION(kQuota, WriteBufferManager::UsageState::kNone,
+                        kInvalidDelayFactor, false);
+
+  if (allow_delay_) {
+    wbf->RegisterForUsageNotifications(this, UsageCb);
+  }
+
+  // But usage state should be maintained nevertheless
+  wbf->FreeMem(kQuota);
+  VALIDATE_NOTIFICATION(-kQuota, WriteBufferManager::UsageState::kNone, 1U,
+                        true);
+
+  wbf->ReserveMem(1000);
+  VALIDATE_NOTIFICATION(1000, WriteBufferManager::UsageState::kNone,
+                        kInvalidDelayFactor, false);
+
+  wbf->ReserveMem(2000);
+  VALIDATE_NOTIFICATION(2000, WriteBufferManager::UsageState::kNone,
+                        kInvalidDelayFactor, false);
+
+  wbf->FreeMem(3000);
+  VALIDATE_NOTIFICATION(-3000, WriteBufferManager::UsageState::kNone,
+                        kInvalidDelayFactor, false);
+
+  wbf->ReserveMem(kDelayThreshold);
+  VALIDATE_NOTIFICATION(kDelayThreshold, WriteBufferManager::UsageState::kDelay,
+                        1U, true);
+
+  wbf->ReserveMem(kStepSize - 1);
+  VALIDATE_NOTIFICATION(kStepSize - 1, WriteBufferManager::UsageState::kNone,
+                        kInvalidDelayFactor, false);
+
+  wbf->ReserveMem(1);
+  VALIDATE_NOTIFICATION(1, WriteBufferManager::UsageState::kDelay,
+                        ExpectedDelayFactor(kStepSize), true);
+
+  // Free all => None
+  wbf->FreeMem(expected_usage);
+  VALIDATE_NOTIFICATION(-expected_usage, WriteBufferManager::UsageState::kNone,
+                        1U, true);
+
+  // None -> Stop (usage == quota)
+  wbf->ReserveMem(kQuota);
+  VALIDATE_NOTIFICATION(kQuota, WriteBufferManager::UsageState::kStop,
+                        WriteBufferManager::kMaxDelayedWriteFactor, true);
+
+  // Increasing the quota
+  wbf->SetBufferSize(wbm_quota * 2);
+  VALIDATE_NOTIFICATION(0, WriteBufferManager::UsageState::kNone, 1U, true);
+
+  // Restoring the quota
+  wbf->SetBufferSize(wbm_quota);
+  VALIDATE_NOTIFICATION(0, WriteBufferManager::UsageState::kStop,
+                        WriteBufferManager::kMaxDelayedWriteFactor, true);
+
+  // Free all => None
+  wbf->FreeMem(kQuota);
+  VALIDATE_NOTIFICATION(-kQuota, WriteBufferManager::UsageState::kNone, 1U,
+                        true);
+
+  wbf->ReserveMem(kQuota);
+  VALIDATE_NOTIFICATION(kQuota, WriteBufferManager::UsageState::kStop,
+                        WriteBufferManager::kMaxDelayedWriteFactor, true);
+
+  wbf->FreeMem(1);
+  VALIDATE_NOTIFICATION(-1, WriteBufferManager::UsageState::kDelay,
+                        ExpectedDelayFactor(kMaxUsed - 1), true);
+
+  wbf->FreeMem(kStepSize);
+  VALIDATE_NOTIFICATION(-kStepSize, WriteBufferManager::UsageState::kDelay,
+                        ExpectedDelayFactor(kMaxUsed - 1 - kStepSize), true);
+
+  wbf->ReserveMem(1);
+  VALIDATE_NOTIFICATION(1, WriteBufferManager::UsageState::kDelay,
+                        ExpectedDelayFactor(kMaxUsed - kStepSize), true);
+
+  wbf->FreeMem(expected_usage);
+  VALIDATE_NOTIFICATION(-expected_usage, WriteBufferManager::UsageState::kNone,
+                        1U, true);
+
+  if (allow_delay_) {
+    wbf->DeregisterFromUsageNotifications(this);
+  }
+
+  // Verify no notification when deregisterd
+  wbf->ReserveMem(kQuota);
+  VALIDATE_NOTIFICATION(kQuota, WriteBufferManager::UsageState::kNone,
+                        kInvalidDelayFactor, false);
+
+  // Another unique "Client"
+  auto another_client = std::make_unique<int>(0);
+
+  if (allow_delay_) {
+    // Re-Register
+    wbf->RegisterForUsageNotifications(this, UsageCb);
+    wbf->RegisterForUsageNotifications(another_client.get(), UsageCb);
+  }
+  // Verify state was maintained and notifications resumed to all client
+  ++expected_num_notifications;  // We have 2 clients => one more notification
+                                 // expected
+  wbf->FreeMem(expected_usage);
+  VALIDATE_NOTIFICATION(-expected_usage, WriteBufferManager::UsageState::kNone,
+                        1U, true);
+
+  if (allow_delay_) {
+    // De-register in revere order (order shouldn't matter)
+    wbf->DeregisterFromUsageNotifications(this);
+    wbf->DeregisterFromUsageNotifications(another_client.get());
+  }
+
+  // Verify no notification when deregisterd
+  wbf->ReserveMem(kQuota);
+  VALIDATE_NOTIFICATION(kQuota, WriteBufferManager::UsageState::kNone,
+                        kInvalidDelayFactor, false);
+}
+
+INSTANTIATE_TEST_CASE_P(WriteBufferManagerTestWithParms,
+                        WriteBufferManagerTestWithParms,
+                        ::testing::Combine(testing::Bool(), testing::Bool(),
+                                           testing::Bool(), testing::Bool()));
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

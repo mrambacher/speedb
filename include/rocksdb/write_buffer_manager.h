@@ -15,8 +15,10 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <functional>
 #include <list>
 #include <mutex>
+#include <unordered_map>
 
 #include "rocksdb/cache.h"
 
@@ -36,6 +38,17 @@ class StallInterface {
 
 class WriteBufferManager final {
  public:
+  // Delay Mechanism (allow_delay==true) definitions
+
+  static constexpr uint64_t kStartDelayPercentThreshold = 80U;
+  static constexpr uint64_t kMaxDelayedWriteFactor = 200U;
+
+  enum class UsageState { kNone, kDelay, kStop };
+
+  using UsageNotificationCb =
+      std::function<void(UsageState type, uint64_t delay_factor)>;
+
+ public:
   // Parameters:
   // _buffer_size: _buffer_size = 0 indicates no limit. Memory won't be capped.
   // memory_usage() won't be valid and ShouldFlush() will always return true.
@@ -47,9 +60,20 @@ class WriteBufferManager final {
   // allow_stall: if set true, it will enable stalling of writes when
   // memory_usage() exceeds buffer_size. It will wait for flush to complete and
   // memory usage to drop down.
+  //
+  // allow_delay: if set to true, it will start delaying of writes when
+  // memory_usage() exceeds the kStartDelayPercentThreshold percent threshold of
+  // the buffer size. The WBM calculates a delay factor that is increasing as
+  // memory_usage() increases. When applicable, the WBM will notify its
+  // registered clients about the applicable delay factor. Clients are expected
+  // to set their respective delayed write rates accordingly. When
+  // memory_usage() reaches buffer_size(), the (optional) WBM stall mechanism
+  // kicks in if enabled. (see allow_stall above)
+  //
   explicit WriteBufferManager(size_t _buffer_size,
                               std::shared_ptr<Cache> cache = {},
-                              bool allow_stall = false);
+                              bool allow_stall = false,
+                              bool allow_delay = false);
   // No copying allowed
   WriteBufferManager(const WriteBufferManager&) = delete;
   WriteBufferManager& operator=(const WriteBufferManager&) = delete;
@@ -62,6 +86,8 @@ class WriteBufferManager final {
 
   // Returns true if pointer to cache is passed.
   bool cost_to_cache() const { return cache_res_mgr_ != nullptr; }
+
+  bool IsDelayAllowed() const { return allow_delay_; }
 
   // Returns the total memory used by memtables.
   // Only valid if enabled()
@@ -86,6 +112,9 @@ class WriteBufferManager final {
     mutable_limit_.store(new_size * 7 / 8, std::memory_order_relaxed);
     // Check if stall is active and can be ended.
     MaybeEndWriteStall();
+    if (enabled()) {
+      NotifyUsageIfApplicable(0, true /* force notification */);
+    }
   }
 
   // Below functions should be called by RocksDB internally.
@@ -154,6 +183,14 @@ class WriteBufferManager final {
 
   std::string GetPrintableOptions() const;
 
+ public:
+  // Registration should be done before the first memory allocation. This is
+  // because notifications are only when the usage state changes => If
+  // registering when already in a delay / stop state, no notification will be
+  // sent.
+  void RegisterForUsageNotifications(void* client, UsageNotificationCb cb);
+  void DeregisterFromUsageNotifications(void* client);
+
  private:
   std::atomic<size_t> buffer_size_;
   std::atomic<size_t> mutable_limit_;
@@ -168,11 +205,19 @@ class WriteBufferManager final {
   // Protects the queue_ and stall_active_.
   std::mutex mu_;
   bool allow_stall_;
+  bool allow_delay_ = false;
   // Value should only be changed by BeginWriteStall() and MaybeEndWriteStall()
   // while holding mu_, but it can be read without a lock.
   std::atomic<bool> stall_active_;
 
+  std::unordered_map<void*, UsageNotificationCb> usage_notification_cbs;
+
   void ReserveMemWithCache(size_t mem);
   void FreeMemWithCache(size_t mem);
+
+  void NotifyUsageIfApplicable(ssize_t memory_changed_size,
+                               bool force_notification);
+
+  UsageState usage_state_ = UsageState::kNone;
 };
 }  // namespace ROCKSDB_NAMESPACE

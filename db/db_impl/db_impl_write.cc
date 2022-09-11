@@ -1028,6 +1028,72 @@ void DBImpl::MemTableInsertStatusCheck(const Status& status) {
   }
 }
 
+uint64_t DBImpl::GetCodedDelayFactor(WriteBufferManager::UsageState usage_state,
+                                     uint64_t delay_factor) const {
+  switch (usage_state) {
+    case WriteBufferManager::UsageState::kNone:
+      return kWbmNoneCodedDelayFactor;
+    case WriteBufferManager::UsageState::kDelay:
+      assert((delay_factor > kWbmNoneCodedDelayFactor) &&
+             (delay_factor <= kWbmStopCodedDelayFactor));
+
+      if (delay_factor <= kWbmNoneCodedDelayFactor) {
+        return kWbmNoneCodedDelayFactor + 1;
+      } else if (delay_factor > kWbmStopCodedDelayFactor) {
+        delay_factor = kWbmStopCodedDelayFactor;
+      }
+      return delay_factor;
+    case WriteBufferManager::UsageState::kStop:
+      return kWbmStopCodedDelayFactor;
+    default:
+      assert(0);
+      return kWbmNoneCodedDelayFactor;
+  }
+}
+
+std::pair<WriteBufferManager::UsageState, uint64_t>
+DBImpl::ParseCodedDelayFactor(uint64_t coded_delay_factor) const {
+  if (coded_delay_factor <= kWbmNoneCodedDelayFactor) {
+    return {WriteBufferManager::UsageState::kNone, kWbmNoneCodedDelayFactor};
+  } else if (coded_delay_factor < kWbmStopCodedDelayFactor) {
+    return {WriteBufferManager::UsageState::kDelay, coded_delay_factor};
+  } else {
+    return {WriteBufferManager::UsageState::kStop,
+            kWbmStopCodedDelayFactor - 1};
+  }
+}
+
+void DBImpl::WriteBufferManagerUsageNotification(
+    WriteBufferManager::UsageState new_usage_state, uint64_t new_delay_factor) {
+  TEST_SYNC_POINT_CALLBACK("DBImpl::WriteBufferManagerUsageNotification",
+                           &new_usage_state);
+  auto updated_coded_delay_factor =
+      GetCodedDelayFactor(new_usage_state, new_delay_factor);
+  wbm_spdb_new_coded_delay_factor_.store(updated_coded_delay_factor,
+                                         std::memory_order_relaxed);
+}
+
+namespace {
+
+std::unique_ptr<WriteControllerToken> SetupDelayFromFactor(
+    WriteController& write_controller, uint64_t delay_factor) {
+  assert(delay_factor > 0U);
+  constexpr uint64_t kMinWriteRate = 16 * 1024u;  // Minimum write rate 16KB/s.
+
+  auto max_write_rate = write_controller.max_delayed_write_rate();
+
+  auto wbm_write_rate = max_write_rate;
+  if (max_write_rate >= kMinWriteRate) {
+    // If user gives rate less than kMinWriteRate, don't adjust it.
+    wbm_write_rate = max_write_rate / delay_factor;
+  }
+
+  return write_controller.GetDelayToken(WriteController::DelaySource::kWBM,
+                                        wbm_write_rate);
+}
+
+}  // namespace
+
 Status DBImpl::PreprocessWrite(const WriteOptions& write_options,
                                bool* need_log_sync,
                                WriteContext* write_context) {
@@ -1070,6 +1136,28 @@ Status DBImpl::PreprocessWrite(const WriteOptions& write_options,
 
   PERF_TIMER_STOP(write_scheduling_flushes_compactions_time);
   PERF_TIMER_GUARD(write_pre_and_post_process_time);
+
+  // TODO - Decide if this condition is likely / unlikely / or leave as is
+  if (status.ok() && write_buffer_manager_ &&
+      write_buffer_manager_->IsDelayAllowed()) {
+    auto curr_coded_delay_factor =
+        wbm_spdb_curr_coded_delay_factor_.load(std::memory_order_relaxed);
+    auto new_coded_delay_factor =
+        wbm_spdb_new_coded_delay_factor_.load(std::memory_order_relaxed);
+    if (UNLIKELY(new_coded_delay_factor != curr_coded_delay_factor)) {
+      auto [new_usage_state, new_delay_factor] =
+          ParseCodedDelayFactor(new_coded_delay_factor);
+      if (new_usage_state == WriteBufferManager::UsageState::kDelay) {
+        write_controller_token_ =
+            SetupDelayFromFactor(write_controller_, new_delay_factor);
+      } else {
+        write_controller_token_.reset();
+      }
+
+      wbm_spdb_curr_coded_delay_factor_.store(new_coded_delay_factor,
+                                              std::memory_order_relaxed);
+    }
+  }
 
   if (UNLIKELY(status.ok() && (write_controller_.IsStopped() ||
                                write_controller_.NeedsDelay()))) {

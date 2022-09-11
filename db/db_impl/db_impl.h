@@ -1094,6 +1094,10 @@ class DBImpl : public DB {
   PeriodicWorkTestScheduler* TEST_GetPeriodicWorkScheduler() const;
 #endif  // !ROCKSDB_LITE
 
+  bool TEST_has_write_controller_token() const {
+    return (write_controller_token_.get() != nullptr);
+  }
+
 #endif  // NDEBUG
 
   // persist stats to column family "_persistent_stats"
@@ -2060,6 +2064,13 @@ class DBImpl : public DB {
   Status IncreaseFullHistoryTsLowImpl(ColumnFamilyData* cfd,
                                       std::string ts_low);
 
+ private:
+  // Callback for WBM usage notifications
+  void WriteBufferManagerUsageNotification(
+      WriteBufferManager::UsageState new_usage_state,
+      uint64_t new_delay_factor);
+
+ private:
   // Lock over the persistent DB state.  Non-nullptr iff successfully acquired.
   FileLock* db_lock_;
 
@@ -2391,8 +2402,30 @@ class DBImpl : public DB {
 
   BlobFileCompletionCallback blob_callback_;
 
+ private:
   // Pointer to WriteBufferManager stalling interface.
   std::unique_ptr<StallInterface> wbm_stall_;
+
+  // The wbm usage + delay factor are coded in a single uint64_t as follows:
+  // kNone - as 0 (kWbmNoneCodedDelayFactor)
+  // kStop - as 1 + max delay factor (kWbmStopCodedDelayFactor)
+  // kDelay - as the delay factor itself, which will actually be used for the
+  // delay token
+  static constexpr uint64_t kWbmNoneCodedDelayFactor = 0U;
+  static constexpr uint64_t kWbmStopCodedDelayFactor =
+      WriteBufferManager::kMaxDelayedWriteFactor + 1;
+
+  uint64_t GetCodedDelayFactor(WriteBufferManager::UsageState usage_state,
+                               uint64_t delay_factor) const;
+
+  std::pair<WriteBufferManager::UsageState, uint64_t> ParseCodedDelayFactor(
+      uint64_t coded_delay_factor) const;
+
+  std::unique_ptr<WriteControllerToken> write_controller_token_;
+  std::atomic<uint64_t> wbm_spdb_curr_coded_delay_factor_ =
+      kWbmNoneCodedDelayFactor;
+  std::atomic<uint64_t> wbm_spdb_new_coded_delay_factor_ =
+      kWbmNoneCodedDelayFactor;
 };
 
 extern Options SanitizeOptions(const std::string& db, const Options& src,

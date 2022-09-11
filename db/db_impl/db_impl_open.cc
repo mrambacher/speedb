@@ -7,6 +7,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include <cinttypes>
+#include <functional>
 
 #include "db/builder.h"
 #include "db/db_impl/db_impl.h"
@@ -1985,6 +1986,23 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     }
     handles->clear();
   }
+
+  // TODO - Is this the correct place to register for notifications?
+  // Could the WBM's used memory be > 0?
+  if (s.ok()) {
+    auto wbm = db_options.write_buffer_manager.get();
+    if (wbm && wbm->IsDelayAllowed()) {
+      // Registering regardless of wbm->enabled() since the buffer size may be
+      // set later making the WBM enabled, but we will not re-register again
+      // However, notifications will only be received when the wbm is enabled
+      auto db_impl = static_cast<DBImpl*>(*dbptr);
+      WriteBufferManager::UsageNotificationCb cb =
+          std::bind(&DBImpl::WriteBufferManagerUsageNotification, db_impl,
+                    std::placeholders::_1, std::placeholders::_2);
+      wbm->RegisterForUsageNotifications(db_impl, cb);
+    }
+  }
+
   return s;
 }
 }  // namespace ROCKSDB_NAMESPACE

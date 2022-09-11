@@ -513,6 +513,10 @@ void DBImpl::CancelAllBackgroundWork(bool wait) {
 }
 
 Status DBImpl::CloseHelper() {
+  if (write_buffer_manager_ && write_buffer_manager_->IsDelayAllowed()) {
+    write_buffer_manager_->DeregisterFromUsageNotifications(this);
+  }
+
   // Guarantee that there is no background error recovery in progress before
   // continuing with the shutdown
   mutex_.Lock();
