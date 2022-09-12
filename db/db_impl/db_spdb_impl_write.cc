@@ -215,8 +215,8 @@ void* SpdbWriteImpl::AddMerge(WriteBatch* batch, const WriteOptions& write_optio
     for (std::list<std::shared_ptr<WritesBatchList>>::iterator iter = wb_lists_.begin(); iter != wb_lists_.end();
         ++iter) {
       (*iter)->WaitForPendingWrites();
+    }
     current_wb = wb_lists_.back().get();
-  }
 
   }
   current_wb->Add(batch, write_options, leader_batch);
