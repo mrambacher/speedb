@@ -183,7 +183,7 @@ Status DBImpl::RegisterFlushOrTrim() {
 void* SpdbWriteImpl::Add(WriteBatch* batch, const WriteOptions& write_options,
                          bool* leader_batch) {
   MutexLock l(&add_buffer_mutex_);
-  WritesBatchList* current_wb;
+  WritesBatchList* current_wb = nullptr;
   {
     MutexLock wb_list_lock(&wb_list_mutex_);
     current_wb = wb_lists_.back().get();
@@ -203,7 +203,7 @@ void* SpdbWriteImpl::AddMerge(WriteBatch* batch, const WriteOptions& write_optio
                               bool* leader_batch) {
   // thie will be released AFTER ths batch will be written to memtable!
   add_buffer_mutex_.Lock();
-  WritesBatchList* current_wb;
+  WritesBatchList* current_wb = nullptr;
   const uint64_t sequence =
       db_->FetchAddLastAllocatedSequence(batch->Count()) + 1;
   WriteBatchInternal::SetSequence(batch, sequence);
