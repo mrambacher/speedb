@@ -28,24 +28,7 @@ namespace ROCKSDB_NAMESPACE {
 
 class DBImpl;
 
-class SpdbWriteImpl {
- public:
-  SpdbWriteImpl(DBImpl* db);
-
-  ~SpdbWriteImpl();
-  void SpdbFlushWriteThread();
-  void* Add(WriteBatch* batch, const WriteOptions& write_options, bool* leader_batch);
-  void* AddMerge(WriteBatch* batch, const WriteOptions& write_options, bool* leader_batch);
-  void CompleteMerge();
-  void Shutdown();
-  void WaitForWalWriteComplete(void* list);
-  void WriteBatchComplete(void* list, bool leader_batch);
-  port::RWMutexWr& GetFlushRWLock() { return flush_rwlock_; }
-  void Lock(bool is_read);
-  void Unlock(bool is_read);
-
- private:
-  struct WritesBatchList {
+struct WritesBatchList {
     std::list<WriteBatch*> wal_writes_;
     uint16_t elements_num_ = 0;
     uint64_t max_seq_ = 0;
@@ -62,6 +45,7 @@ class SpdbWriteImpl {
       switch_wb_ = false;
       complete_batch_ = false;
     }
+ public:
 
     bool Add(WriteBatch* batch, const WriteOptions& write_options, bool* leader_batch);
     uint64_t GetMaxSeq() const { return max_seq_; }
@@ -69,8 +53,27 @@ class SpdbWriteImpl {
     bool IsSwitchWBOccur() const { return switch_wb_.load(); }
     bool IsComplete() const { return complete_batch_.load(); }
     void WriteBatchComplete(bool leader_batch);
-  };
+};
 
+class SpdbWriteImpl {
+ public:
+  SpdbWriteImpl(DBImpl* db);
+
+  ~SpdbWriteImpl();
+  void SpdbFlushWriteThread();
+  
+  std::shared_ptr<WritesBatchList> Add(WriteBatch* batch, const WriteOptions& write_options, bool* leader_batch);
+  std::shared_ptr<WritesBatchList> AddMerge(WriteBatch* batch, const WriteOptions& write_options, bool* leader_batch);
+  void CompleteMerge();
+  void Shutdown();
+  void WaitForWalWriteComplete(void* list);
+  void WriteBatchComplete(void* list, bool leader_batch);
+  port::RWMutexWr& GetFlushRWLock() { return flush_rwlock_; }
+  void Lock(bool is_read);
+  void Unlock(bool is_read);
+
+ public:
+ 
   void SwitchAndWriteBatchGroup(WritesBatchList* wb_list);
   void SwitchBatchGroupIfNeeded();
   void PublishedSeq();

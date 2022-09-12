@@ -25,7 +25,7 @@
 namespace ROCKSDB_NAMESPACE {
 #define MAX_ELEMENTS_IN_BATCH_GROUP 16
 // add_buffer_mutex_ is held
-bool SpdbWriteImpl::WritesBatchList::Add(WriteBatch* batch, const WriteOptions& write_options,
+bool WritesBatchList::Add(WriteBatch* batch, const WriteOptions& write_options,
                                          bool* leader_batch) {
   elements_num_++;
   if (elements_num_ == MAX_ELEMENTS_IN_BATCH_GROUP) {
@@ -49,7 +49,7 @@ bool SpdbWriteImpl::WritesBatchList::Add(WriteBatch* batch, const WriteOptions& 
   return switch_wb_.load();
 }
 
-void SpdbWriteImpl::WritesBatchList::WriteBatchComplete(bool leader_batch) {
+void WritesBatchList::WriteBatchComplete(bool leader_batch) {
   // Batch was added to the memtable, we can release the memtable_ref.
   write_ref_rwlock_.ReadUnlock();
   if (leader_batch) {
@@ -67,7 +67,7 @@ void SpdbWriteImpl::WritesBatchList::WriteBatchComplete(bool leader_batch) {
   }
 }
 
-void SpdbWriteImpl::WritesBatchList::WaitForPendingWrites() {
+void WritesBatchList::WaitForPendingWrites() {
   // make sure all batches wrote to memtable (ifneeded) to be able progress the
   // version
   WriteLock wl(&write_ref_rwlock_);
@@ -180,13 +180,13 @@ Status DBImpl::RegisterFlushOrTrim() {
   return status;
 }
 
-void* SpdbWriteImpl::Add(WriteBatch* batch, const WriteOptions& write_options,
+std::shared_ptr<WritesBatchList> SpdbWriteImpl::Add(WriteBatch* batch, const WriteOptions& write_options,
                          bool* leader_batch) {
   MutexLock l(&add_buffer_mutex_);
-  WritesBatchList* current_wb = nullptr;
+  std::shared_ptr<WritesBatchList> current_wb = nullptr;
   {
     MutexLock wb_list_lock(&wb_list_mutex_);
-    current_wb = wb_lists_.back().get();
+    current_wb = wb_lists_.back();
   }
   const uint64_t sequence =
       db_->FetchAddLastAllocatedSequence(batch->Count()) + 1;
@@ -199,11 +199,11 @@ void* SpdbWriteImpl::Add(WriteBatch* batch, const WriteOptions& write_options,
   return current_wb;
 }
 
-void* SpdbWriteImpl::AddMerge(WriteBatch* batch, const WriteOptions& write_options,
+std::shared_ptr<WritesBatchList> SpdbWriteImpl::AddMerge(WriteBatch* batch, const WriteOptions& write_options,
                               bool* leader_batch) {
   // thie will be released AFTER ths batch will be written to memtable!
   add_buffer_mutex_.Lock();
-  WritesBatchList* current_wb = nullptr;
+  std::shared_ptr<WritesBatchList> current_wb = nullptr;
   const uint64_t sequence =
       db_->FetchAddLastAllocatedSequence(batch->Count()) + 1;
   WriteBatchInternal::SetSequence(batch, sequence);
@@ -216,7 +216,7 @@ void* SpdbWriteImpl::AddMerge(WriteBatch* batch, const WriteOptions& write_optio
         ++iter) {
       (*iter)->WaitForPendingWrites();
     }
-    current_wb = wb_lists_.back().get();
+    current_wb = wb_lists_.back();
 
   }
   current_wb->Add(batch, write_options, leader_batch);
@@ -264,13 +264,14 @@ void SpdbWriteImpl::PublishedSeq() {
         break;
       }
     } 
-  }
-  if (published_seq != 0) {
-    ROCKS_LOG_INFO(db_->immutable_db_options().info_log,
-                "PublishedSeq %" PRIu64, published_seq);
+    if (published_seq != 0) {
+      ROCKS_LOG_INFO(db_->immutable_db_options().info_log,
+                  "PublishedSeq %" PRIu64, published_seq);
 
-    db_->SetLastSequence(published_seq);
-  } 
+      db_->SetLastSequence(published_seq);
+    }     
+  }
+
 
 
 }
@@ -390,7 +391,7 @@ Status DBImpl::SpdbWrite(const WriteOptions& write_options, WriteBatch* batch,
 
   Status status;
   bool leader_batch = false;
-  void* list;
+  std::shared_ptr<WritesBatchList> list;
   if (batch->HasMerge()) {
     // need to wait all prev batches completed to write to memetable and avoid
     // new batches to write to memetable before this one
@@ -415,7 +416,7 @@ Status DBImpl::SpdbWrite(const WriteOptions& write_options, WriteBatch* batch,
   }
 
   // handle !status.ok()
-  spdb_write_->WriteBatchComplete(list, leader_batch);
+  spdb_write_->WriteBatchComplete(list.get(), leader_batch);
   spdb_write_->Unlock(true);
 
   return status;
