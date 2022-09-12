@@ -183,7 +183,11 @@ Status DBImpl::RegisterFlushOrTrim() {
 void* SpdbWriteImpl::Add(WriteBatch* batch, const WriteOptions& write_options,
                          bool* leader_batch) {
   MutexLock l(&add_buffer_mutex_);
-  WritesBatchList* current_wb = wb_lists_.back().get();
+  WritesBatchList* current_wb;
+  {
+    MutexLock wb_list_lock(&wb_list_mutex_);
+    current_wb = wb_lists_.back().get();
+  }
   const uint64_t sequence =
       db_->FetchAddLastAllocatedSequence(batch->Count()) + 1;
   WriteBatchInternal::SetSequence(batch, sequence);
@@ -199,15 +203,21 @@ void* SpdbWriteImpl::AddMerge(WriteBatch* batch, const WriteOptions& write_optio
                               bool* leader_batch) {
   // thie will be released AFTER ths batch will be written to memtable!
   add_buffer_mutex_.Lock();
-  WritesBatchList* current_wb = wb_lists_.back().get();
+  WritesBatchList* current_wb;
   const uint64_t sequence =
       db_->FetchAddLastAllocatedSequence(batch->Count()) + 1;
   WriteBatchInternal::SetSequence(batch, sequence);
   // need to wait all prev batches completed to write to memetable and avoid
   // new batches to write to memetable before this one
-  for (std::list<std::shared_ptr<WritesBatchList>>::iterator iter = wb_lists_.begin(); iter != wb_lists_.end();
-       ++iter) {
-    (*iter)->WaitForPendingWrites();
+  
+  {
+    MutexLock l(&wb_list_mutex_);
+    for (std::list<std::shared_ptr<WritesBatchList>>::iterator iter = wb_lists_.begin(); iter != wb_lists_.end();
+        ++iter) {
+      (*iter)->WaitForPendingWrites();
+    current_wb = wb_lists_.back().get();
+  }
+
   }
   current_wb->Add(batch, write_options, leader_batch);
 
@@ -234,6 +244,7 @@ void SpdbWriteImpl::Unlock(bool is_read) {
 
 void SpdbWriteImpl::SwitchBatchGroupIfNeeded() {
   MutexLock l(&add_buffer_mutex_);
+  MutexLock wb_list_lock(&wb_list_mutex_);
   //create new wb if needed
   //if (!wb_list->IsSwitchWBOccur()) {
   wb_lists_.push_back(std::make_shared<WritesBatchList>());
@@ -242,16 +253,22 @@ void SpdbWriteImpl::SwitchBatchGroupIfNeeded() {
 
 void SpdbWriteImpl::PublishedSeq() {
   uint64_t published_seq = 0;
-  std::list<std::shared_ptr<WritesBatchList>>::iterator iter = wb_lists_.begin();
-  while (iter != wb_lists_.end()) {
-    if ((*iter)->IsComplete()) {
-      published_seq = (*iter)->GetMaxSeq();
-      iter = wb_lists_.erase(iter);// erase and go to next
-    } else{
-      break;
-    }
-  } 
+  {
+    MutexLock l(&wb_list_mutex_);
+    std::list<std::shared_ptr<WritesBatchList>>::iterator iter = wb_lists_.begin();
+    while (iter != wb_lists_.end()) {
+      if ((*iter)->IsComplete()) {
+        published_seq = (*iter)->GetMaxSeq();
+        iter = wb_lists_.erase(iter);// erase and go to next
+      } else{
+        break;
+      }
+    } 
+  }
   if (published_seq != 0) {
+    ROCKS_LOG_INFO(db_->immutable_db_options().info_log,
+                "PublishedSeq %" PRIu64, published_seq);
+
     db_->SetLastSequence(published_seq);
   } 
 
@@ -268,6 +285,10 @@ void SpdbWriteImpl::SwitchAndWriteBatchGroup(WritesBatchList* batch_group) {
 
   wal_write_mutex_.Lock();
   SwitchBatchGroupIfNeeded();
+  ROCKS_LOG_INFO(db_->immutable_db_options().info_log,
+              "SwitchBatchGroup last batch group with %d batches and with publish seq %" PRIu64, batch_group->elements_num_, batch_group->GetMaxSeq());
+
+
   if (!batch_group->wal_writes_.empty()) {
     auto const& immutable_db_options = db_->immutable_db_options();
     StopWatch write_sw(immutable_db_options.clock, immutable_db_options.stats,
@@ -343,6 +364,9 @@ void SpdbWriteImpl::SwitchAndWriteBatchGroup(WritesBatchList* batch_group) {
 
 
   batch_group->WriteBatchComplete(true);
+  ROCKS_LOG_INFO(db_->immutable_db_options().info_log,
+            "Complete batch group with publish seq %" PRIu64, batch_group->GetMaxSeq());
+
   PublishedSeq();
 
 }
@@ -420,12 +444,18 @@ IOStatus DBImpl::SpdbSyncWAL(uint64_t offset, uint64_t size) {
     InstrumentedMutexLock l(&log_write_mutex_);
     log::Writer* log_writer = logs_.back().writer;
     io_s = log_writer->SyncRange(immutable_db_options_.use_fsync, offset, size);
+    ROCKS_LOG_INFO(immutable_db_options().info_log,
+            "Complete SyncRange offset %" PRIu64 " size %" PRIu64, offset, size);
+
   } 
   if (io_s.ok() && !log_dir_synced_) {
     io_s = directories_.GetWalDir()->FsyncWithDirOptions(
         IOOptions(), nullptr,
         DirFsyncOptions(DirFsyncOptions::FsyncReason::kNewFileSynced));
     log_dir_synced_ = true;
+      ROCKS_LOG_INFO(immutable_db_options().info_log,
+          "Complete Sync dir");
+
   } 
   return io_s;
 }

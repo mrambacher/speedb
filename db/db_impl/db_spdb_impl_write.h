@@ -88,6 +88,8 @@ class SpdbWriteImpl {
   std::thread flush_thread_;
   port::RWMutexWr wal_buffers_rwlock_;
   port::Mutex wal_write_mutex_;
+  port::Mutex wb_list_mutex_;
+
   WriteBatch tmp_batch_;
 };
 
