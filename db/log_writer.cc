@@ -152,6 +152,30 @@ IOStatus Writer::AddRecord(const Slice& slice,
   return s;
 }
 
+IOStatus Writer::AddRecordWithStartOffsetAndSize(const Slice& slice,
+                           Env::IOPriority rate_limiter_priority, bool do_flush, uint64_t* offset, uint64_t* size) {
+  IOStatus s;
+  *offset = dest_->GetFileSize();
+  s = AddRecord(slice, rate_limiter_priority, do_flush);
+  *size = dest_->GetFileSize() - *offset + 1;    
+  return s;                   
+}
+
+IOStatus Writer::SyncRange(bool use_fsync, uint64_t offset, uint64_t size) {
+  IOStatus s;
+  if (!manual_flush_ ) {
+    s = dest_->RangeSync(offset, size);
+  } else {
+    s = dest_->Sync(use_fsync);
+  }
+  return s;
+}              
+
+
+
+
+
+
 IOStatus Writer::AddCompressionTypeRecord() {
   // Should be the first record
   assert(block_offset_ == 0);

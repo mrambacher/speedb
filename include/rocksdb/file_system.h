@@ -1117,6 +1117,14 @@ class FSWritableFile {
     return IOStatus::OK();
   }
 
+  
+
+  /*virtual IOStatus RangeSyncSPDB(uint64_t offset, uint64_t nbytes,
+                             const IOOptions& options, IODebugContext* dbg) {
+    return RangeSyncSPDB(options, dbg);
+  }*/
+
+
   // PrepareWrite performs any necessary preparation for a write
   // before the write actually occurs.  This allows for pre-allocation
   // of space on devices where it can result in less file
@@ -1708,6 +1716,7 @@ class FSWritableFileWrapper : public FSWritableFile {
                      IODebugContext* dbg) override {
     return target_->RangeSync(offset, nbytes, options, dbg);
   }
+  
 
   void PrepareWrite(size_t offset, size_t len, const IOOptions& options,
                     IODebugContext* dbg) override {

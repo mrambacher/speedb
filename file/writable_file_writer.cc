@@ -480,6 +480,13 @@ IOStatus WritableFileWriter::RangeSync(uint64_t offset, uint64_t nbytes) {
   return s;
 }
 
+/*IOStatus WritableFileWriter::RangeSyncSPDB(uint64_t offset, uint64_t nbytes) {
+  IOSTATS_TIMER_GUARD(range_sync_nanos);
+  TEST_SYNC_POINT("WritableFileWriter::RangeSyncSPDB:0");
+  IOStatus s = writable_file_->RangeSyncSPDB(offset, nbytes, IOOptions(), nullptr);
+  return s;
+}*/
+
 // This method writes to disk the specified data and makes use of the rate
 // limiter if available
 IOStatus WritableFileWriter::WriteBuffered(
