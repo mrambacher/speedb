@@ -54,6 +54,8 @@ static const uint32_t KNumBitsInBlockBloom =
 constexpr uint32_t kBatchSizeInBytes =
     speedb_filter::kPairedBloomBatchSizeInBlocks * kBlockSizeInBytes;
 
+constexpr uint32_t kBatchSizeInBits = kBatchSizeInBytes * 8;
+
 constexpr uint64_t kNumMillibitsInByte = 8 * 1000U;
 
 constexpr uint32_t kMaxSupportLenWithMetadata = 0xffffffffU;
@@ -448,9 +450,24 @@ void SpdbPairedBloomBitsBuilder::InitVars(uint64_t len_no_metadata) {
   num_probes_ = CalcNumProbes(millibits_per_key_);
 }
 
+namespace {
+
+// When the user requested bpk is small (<=8) there is a performance degradation
+// This is because, unlike RocksDB's blocked bloom, our paired algorithm must
+// have a number of blocks that is a multiple of the batch size.
+int AdjustMillibitsPerKey(int curr_millibits_per_key, size_t num_entries) {
+  auto num_total_bits =
+      static_cast<double>(curr_millibits_per_key) / 1000.0 * num_entries;
+  auto num_batches_rounded_up = ceil(num_total_bits / kBatchSizeInBits);
+  return ceil((num_batches_rounded_up * kBatchSizeInBits * 1000) / num_entries);
+}
+}  // namespace
+
 Slice SpdbPairedBloomBitsBuilder::Finish(std::unique_ptr<const char[]>* buf,
                                          Status* status) {
   const size_t num_entries = hash_entries_info_.entries.size();
+  millibits_per_key_ = AdjustMillibitsPerKey(millibits_per_key_, num_entries);
+
   size_t len_with_metadata = CalculateSpace(num_entries);
 
   std::unique_ptr<char[]> mutable_buf;
