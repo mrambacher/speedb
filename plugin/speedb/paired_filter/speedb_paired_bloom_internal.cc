@@ -56,7 +56,7 @@ constexpr uint32_t kBatchSizeInBytes =
 
 constexpr uint64_t kNumMillibitsInByte = 8 * 1000U;
 
-constexpr uint32_t kMaxSupportLenWithMetadata = 0xffffffffU;
+[[maybe_unused]] constexpr uint32_t kMaxSupportLenWithMetadata = 0xffffffffU;
 constexpr uint32_t kMaxSupportedSizeNoMetadata = 0xffffffc0U;
 
 constexpr size_t kMaxNumProbes = 30U;
