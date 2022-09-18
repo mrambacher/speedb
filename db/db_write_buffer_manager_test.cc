@@ -15,19 +15,14 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-class DBWriteBufferManagerTest
-    : public DBTestBase,
-      public ::testing::WithParamInterface<std::tuple<bool, bool>> {
+class DBWriteBufferManagerTest : public DBTestBase,
+                                 public ::testing::WithParamInterface<bool> {
  public:
   DBWriteBufferManagerTest()
       : DBTestBase("db_write_buffer_manager_test", /*env_do_fsync=*/false) {}
 
-  void SetUp() override {
-    cost_cache_ = std::get<0>(GetParam());
-    allow_delay_ = std::get<1>(GetParam());
-  }
+  void SetUp() override { cost_cache_ = GetParam(); }
   bool cost_cache_;
-  bool allow_delay_;
 };
 
 TEST_P(DBWriteBufferManagerTest, SharedBufferAcrossCFs1) {
@@ -39,10 +34,10 @@ TEST_P(DBWriteBufferManagerTest, SharedBufferAcrossCFs1) {
 
   if (cost_cache_) {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, cache, true, allow_delay_));
+        new WriteBufferManager(100000, cache, true));
   } else {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, nullptr, true, allow_delay_));
+        new WriteBufferManager(100000, nullptr, true));
   }
 
   WriteOptions wo;
@@ -81,10 +76,10 @@ TEST_P(DBWriteBufferManagerTest, SharedWriteBufferAcrossCFs2) {
 
   if (cost_cache_) {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, cache, true, allow_delay_));
+        new WriteBufferManager(100000, cache, true));
   } else {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, nullptr, true, allow_delay_));
+        new WriteBufferManager(100000, nullptr, true));
   }
   WriteOptions wo;
   wo.disableWAL = true;
@@ -101,7 +96,6 @@ TEST_P(DBWriteBufferManagerTest, SharedWriteBufferAcrossCFs2) {
   ASSERT_OK(Put(0, Key(1), DummyString(40000), wo));
   ASSERT_OK(Put(2, Key(1), DummyString(1), wo));
 
-  // std::cout << "Writing 40,000\n";
   ASSERT_OK(Put(3, Key(2), DummyString(40000), wo));
   // WriteBufferManager::buffer_size_ has exceeded after the previous write is
   // completed.
@@ -143,7 +137,6 @@ TEST_P(DBWriteBufferManagerTest, SharedWriteBufferAcrossCFs2) {
   std::function<void(int)> writer = [&](int cf) {
     int a = thread_num.fetch_add(1);
     std::string key = "foo" + std::to_string(a);
-    // std::cout << "Writer (" << a << ") - Write\n";
     Status tmp = Put(cf, Slice(key), DummyString(1), wo);
     InstrumentedMutexLock lock(&mutex);
     s = s && tmp.ok();
@@ -210,10 +203,10 @@ TEST_P(DBWriteBufferManagerTest, SharedWriteBufferLimitAcrossDB) {
 
   if (cost_cache_) {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, cache, true, allow_delay_));
+        new WriteBufferManager(100000, cache, true));
   } else {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, nullptr, true, allow_delay_));
+        new WriteBufferManager(100000, nullptr, true));
   }
   CreateAndReopenWithCF({"cf1", "cf2"}, options);
 
@@ -326,10 +319,10 @@ TEST_P(DBWriteBufferManagerTest, SharedWriteBufferLimitAcrossDB1) {
 
   if (cost_cache_) {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, cache, true, allow_delay_));
+        new WriteBufferManager(100000, cache, true));
   } else {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, nullptr, true, allow_delay_));
+        new WriteBufferManager(100000, nullptr, true));
   }
   CreateAndReopenWithCF({"cf1", "cf2"}, options);
 
@@ -467,10 +460,10 @@ TEST_P(DBWriteBufferManagerTest, MixedSlowDownOptionsSingleDB) {
 
   if (cost_cache_) {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, cache, true, allow_delay_));
+        new WriteBufferManager(100000, cache, true));
   } else {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, nullptr, true, allow_delay_));
+        new WriteBufferManager(100000, nullptr, true));
   }
   WriteOptions wo;
   wo.disableWAL = true;
@@ -628,10 +621,10 @@ TEST_P(DBWriteBufferManagerTest, MixedSlowDownOptionsMultipleDB) {
 
   if (cost_cache_) {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, cache, true, allow_delay_));
+        new WriteBufferManager(100000, cache, true));
   } else {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(100000, nullptr, true, allow_delay_));
+        new WriteBufferManager(100000, nullptr, true));
   }
   CreateAndReopenWithCF({"cf1", "cf2"}, options);
 
@@ -809,10 +802,10 @@ TEST_P(DBWriteBufferManagerTest1, WbmDelaySharedWriteBufferAcrossCFs) {
 
   if (cost_cache_) {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(kQuota, cache, true, true));
+        new WriteBufferManager(kQuota, cache, true));
   } else {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(kQuota, nullptr, true, true));
+        new WriteBufferManager(kQuota, nullptr, true));
   }
   WriteOptions wo;
   wo.disableWAL = true;
@@ -882,10 +875,10 @@ TEST_P(DBWriteBufferManagerTest1, WbmDelaySharedWriteBufferAcrossDBs) {
 
   if (cost_cache_) {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(kQuota, cache, true, true));
+        new WriteBufferManager(kQuota, cache, true));
   } else {
     options.write_buffer_manager.reset(
-        new WriteBufferManager(kQuota, nullptr, true, true));
+        new WriteBufferManager(kQuota, nullptr, true));
   }
 
   WriteBufferManager::UsageState new_usage_state =
@@ -936,7 +929,7 @@ TEST_P(DBWriteBufferManagerTest1, WbmDelaySharedWriteBufferAcrossDBs) {
 }
 
 INSTANTIATE_TEST_CASE_P(DBWriteBufferManagerTest, DBWriteBufferManagerTest,
-                        ::testing::Combine(testing::Bool(), testing::Bool()));
+                        testing::Bool());
 
 INSTANTIATE_TEST_CASE_P(DBWriteBufferManagerTest1, DBWriteBufferManagerTest1,
                         ::testing::Bool());

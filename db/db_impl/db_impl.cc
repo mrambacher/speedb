@@ -513,8 +513,11 @@ void DBImpl::CancelAllBackgroundWork(bool wait) {
 }
 
 Status DBImpl::CloseHelper() {
-  if (write_buffer_manager_ && write_buffer_manager_->IsDelayAllowed()) {
+  if (is_registered_for_wbm_usage_notifications_) {
+    assert(write_buffer_manager_);
+    assert(write_buffer_manager_->IsDelayAllowed());
     write_buffer_manager_->DeregisterFromUsageNotifications(this);
+    is_registered_for_wbm_usage_notifications_ = false;
   }
 
   // Guarantee that there is no background error recovery in progress before

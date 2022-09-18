@@ -1996,10 +1996,12 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
       // set later making the WBM enabled, but we will not re-register again
       // However, notifications will only be received when the wbm is enabled
       auto db_impl = static_cast<DBImpl*>(*dbptr);
-      WriteBufferManager::UsageNotificationCb cb =
-          std::bind(&DBImpl::WriteBufferManagerUsageNotification, db_impl,
-                    std::placeholders::_1, std::placeholders::_2);
+      auto cb = [db_impl](WriteBufferManager::UsageState type,
+                          uint64_t delay_factor) {
+        db_impl->WriteBufferManagerUsageNotification(type, delay_factor);
+      };
       wbm->RegisterForUsageNotifications(db_impl, cb);
+      db_impl->is_registered_for_wbm_usage_notifications_ = true;
     }
   }
 

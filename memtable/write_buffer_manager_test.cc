@@ -301,25 +301,23 @@ TEST_F(WriteBufferManagerTest, CacheFull) {
   ValidateNotification(__LINE__, memory_change_size, expected_state, \
                        expected_factor, expect_notification)
 
-class WriteBufferManagerTestWithParms
+class WriteBufferManagerTestWithParams
     : public WriteBufferManagerTest,
-      public ::testing::WithParamInterface<std::tuple<bool, bool, bool, bool>> {
+      public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {
  public:
   void SetUp() override {
     wbm_enabled_ = std::get<0>(GetParam());
     cost_cache_ = std::get<1>(GetParam());
-    allow_stall_ = std::get<2>(GetParam());
-    allow_delay_ = std::get<3>(GetParam());
+    allow_delays_and_stalls_ = std::get<2>(GetParam());
   }
 
   bool wbm_enabled_;
   bool cost_cache_;
-  bool allow_stall_;
-  bool allow_delay_;
+  bool allow_delays_and_stalls_;
 };
 
 // Test that the write buffer manager sends the expected usage notifications
-TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
+TEST_P(WriteBufferManagerTestWithParams, UsageNotifications) {
   constexpr size_t kQuota = 10 * 1000;
   constexpr size_t kStepSize = kQuota / 100;
   constexpr size_t kDelayThreshold =
@@ -333,10 +331,10 @@ TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
   auto wbm_quota = (wbm_enabled_ ? kQuota : 0U);
   if (cost_cache_) {
     wbf.reset(
-        new WriteBufferManager(wbm_quota, cache, allow_stall_, allow_delay_));
+        new WriteBufferManager(wbm_quota, cache, allow_delays_and_stalls_));
   } else {
     wbf.reset(
-        new WriteBufferManager(wbm_quota, nullptr, allow_stall_, allow_delay_));
+        new WriteBufferManager(wbm_quota, nullptr, allow_delays_and_stalls_));
   }
   ASSERT_EQ(wbf->enabled(), wbm_enabled_);
 
@@ -376,7 +374,7 @@ TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
     }
     ASSERT_EQ(wbf->memory_usage(), expected_usage) << location_str;
 
-    if (wbm_enabled_ && allow_delay_) {
+    if (wbm_enabled_ && allow_delays_and_stalls_) {
       ASSERT_EQ(last_notification_type, expected_state) << location_str;
       ASSERT_EQ(last_notification_delay_factor, expected_factor)
           << location_str;
@@ -404,7 +402,7 @@ TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
   VALIDATE_NOTIFICATION(kQuota, WriteBufferManager::UsageState::kNone,
                         kInvalidDelayFactor, false);
 
-  if (allow_delay_) {
+  if (allow_delays_and_stalls_) {
     wbf->RegisterForUsageNotifications(this, UsageCb);
   }
 
@@ -481,7 +479,7 @@ TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
   VALIDATE_NOTIFICATION(-expected_usage, WriteBufferManager::UsageState::kNone,
                         1U, true);
 
-  if (allow_delay_) {
+  if (allow_delays_and_stalls_) {
     wbf->DeregisterFromUsageNotifications(this);
   }
 
@@ -493,7 +491,7 @@ TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
   // Another unique "Client"
   auto another_client = std::make_unique<int>(0);
 
-  if (allow_delay_) {
+  if (allow_delays_and_stalls_) {
     // Re-Register
     wbf->RegisterForUsageNotifications(this, UsageCb);
     wbf->RegisterForUsageNotifications(another_client.get(), UsageCb);
@@ -505,7 +503,7 @@ TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
   VALIDATE_NOTIFICATION(-expected_usage, WriteBufferManager::UsageState::kNone,
                         1U, true);
 
-  if (allow_delay_) {
+  if (allow_delays_and_stalls_) {
     // De-register in revere order (order shouldn't matter)
     wbf->DeregisterFromUsageNotifications(this);
     wbf->DeregisterFromUsageNotifications(another_client.get());
@@ -517,10 +515,10 @@ TEST_P(WriteBufferManagerTestWithParms, UsageNotifications) {
                         kInvalidDelayFactor, false);
 }
 
-INSTANTIATE_TEST_CASE_P(WriteBufferManagerTestWithParms,
-                        WriteBufferManagerTestWithParms,
+INSTANTIATE_TEST_CASE_P(WriteBufferManagerTestWithParams,
+                        WriteBufferManagerTestWithParams,
                         ::testing::Combine(testing::Bool(), testing::Bool(),
-                                           testing::Bool(), testing::Bool()));
+                                           testing::Bool()));
 
 }  // namespace ROCKSDB_NAMESPACE
 

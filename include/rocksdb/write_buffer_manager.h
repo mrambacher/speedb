@@ -38,7 +38,7 @@ class StallInterface {
 
 class WriteBufferManager final {
  public:
-  // Delay Mechanism (allow_delay==true) definitions
+  // Delay Mechanism (allow_delays_and_stalls==true) definitions
 
   static constexpr uint64_t kStartDelayPercentThreshold = 80U;
   static constexpr uint64_t kMaxDelayedWriteFactor = 200U;
@@ -57,23 +57,24 @@ class WriteBufferManager final {
   // cost the memory allocated to the cache. It can be used even if _buffer_size
   // = 0.
   //
-  // allow_stall: if set true, it will enable stalling of writes when
-  // memory_usage() exceeds buffer_size. It will wait for flush to complete and
-  // memory usage to drop down.
-  //
-  // allow_delay: if set to true, it will start delaying of writes when
-  // memory_usage() exceeds the kStartDelayPercentThreshold percent threshold of
-  // the buffer size. The WBM calculates a delay factor that is increasing as
-  // memory_usage() increases. When applicable, the WBM will notify its
-  // registered clients about the applicable delay factor. Clients are expected
-  // to set their respective delayed write rates accordingly. When
-  // memory_usage() reaches buffer_size(), the (optional) WBM stall mechanism
-  // kicks in if enabled. (see allow_stall above)
+  // allow_delays_and_stalls: if set true, it will enable delays and stall as
+  // described below.
+  //  Delays: if set to true, it will start delaying of writes when
+  //    memory_usage() exceeds the kStartDelayPercentThreshold percent threshold
+  //    of the buffer size. The WBM calculates a delay factor that is increasing
+  //    as memory_usage() increases. When applicable, the WBM will notify its
+  //    registered clients about the applicable delay factor. Clients are
+  //    expected to set their respective delayed write rates accordingly. When
+  //    memory_usage() reaches buffer_size(), the (optional) WBM stall mechanism
+  //    kicks in if enabled. (see allow_delays_and_stalls above)
+  //  Stalls: stalling of writes when memory_usage() exceeds buffer_size. It
+  //  will wait for flush to complete and
+  //   memory usage to drop down.
   //
   explicit WriteBufferManager(size_t _buffer_size,
                               std::shared_ptr<Cache> cache = {},
-                              bool allow_stall = false,
-                              bool allow_delay = false);
+                              bool allow_delays_and_stalls = true);
+
   // No copying allowed
   WriteBufferManager(const WriteBufferManager&) = delete;
   WriteBufferManager& operator=(const WriteBufferManager&) = delete;
@@ -87,7 +88,7 @@ class WriteBufferManager final {
   // Returns true if pointer to cache is passed.
   bool cost_to_cache() const { return cache_res_mgr_ != nullptr; }
 
-  bool IsDelayAllowed() const { return allow_delay_; }
+  bool IsDelayAllowed() const { return allow_delays_and_stalls_; }
 
   // Returns the total memory used by memtables.
   // Only valid if enabled()
@@ -142,11 +143,12 @@ class WriteBufferManager final {
   // We stall the writes untill memory_usage drops below buffer_size. When the
   // function returns true, all writer threads (including one checking this
   // condition) across all DBs will be stalled. Stall is allowed only if user
-  // pass allow_stall = true during WriteBufferManager instance creation.
+  // pass allow_delays_and_stalls = true during WriteBufferManager instance
+  // creation.
   //
   // Should only be called by RocksDB internally .
   bool ShouldStall() const {
-    if (!allow_stall_ || !enabled()) {
+    if (!allow_delays_and_stalls_ || !enabled()) {
       return false;
     }
 
@@ -202,15 +204,14 @@ class WriteBufferManager final {
   std::mutex cache_res_mgr_mu_;
 
   std::list<StallInterface*> queue_;
-  // Protects the queue_ and stall_active_.
+  // Protects the queue_, stall_active_ and usage_notification_cbs_
   std::mutex mu_;
-  bool allow_stall_;
-  bool allow_delay_ = false;
+  bool allow_delays_and_stalls_ = true;
   // Value should only be changed by BeginWriteStall() and MaybeEndWriteStall()
   // while holding mu_, but it can be read without a lock.
   std::atomic<bool> stall_active_;
 
-  std::unordered_map<void*, UsageNotificationCb> usage_notification_cbs;
+  std::unordered_map<void*, UsageNotificationCb> usage_notification_cbs_;
 
   void ReserveMemWithCache(size_t mem);
   void FreeMemWithCache(size_t mem);

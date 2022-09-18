@@ -20,14 +20,13 @@
 namespace ROCKSDB_NAMESPACE {
 WriteBufferManager::WriteBufferManager(size_t _buffer_size,
                                        std::shared_ptr<Cache> cache,
-                                       bool allow_stall, bool allow_delay)
+                                       bool allow_delays_and_stalls)
     : buffer_size_(_buffer_size),
       mutable_limit_(buffer_size_ * 7 / 8),
       memory_used_(0),
       memory_active_(0),
       cache_res_mgr_(nullptr),
-      allow_stall_(allow_stall),
-      allow_delay_(allow_delay),
+      allow_delays_and_stalls_(allow_delays_and_stalls),
       stall_active_(false) {
 #ifndef ROCKSDB_LITE
   if (cache) {
@@ -139,7 +138,7 @@ void WriteBufferManager::FreeMemWithCache(size_t mem) {
 
 void WriteBufferManager::BeginWriteStall(StallInterface* wbm_stall) {
   assert(wbm_stall != nullptr);
-  assert(allow_stall_);
+  assert(allow_delays_and_stalls_);
 
   // Allocate outside of the lock.
   std::list<StallInterface*> new_node = {wbm_stall};
@@ -164,7 +163,7 @@ void WriteBufferManager::BeginWriteStall(StallInterface* wbm_stall) {
 void WriteBufferManager::MaybeEndWriteStall() {
   // Cannot early-exit on !enabled() because SetBufferSize(0) needs to unblock
   // the writers.
-  if (!allow_stall_) {
+  if (!allow_delays_and_stalls_) {
     return;
   }
 
@@ -196,7 +195,7 @@ void WriteBufferManager::RemoveDBFromQueue(StallInterface* wbm_stall) {
   // Deallocate the removed nodes outside of the lock.
   std::list<StallInterface*> cleanup;
 
-  if (enabled() && allow_stall_) {
+  if (enabled() && allow_delays_and_stalls_) {
     std::unique_lock<std::mutex> lock(mu_);
     for (auto it = queue_.begin(); it != queue_.end();) {
       auto next = std::next(it);
@@ -226,25 +225,25 @@ std::string WriteBufferManager::GetPrintableOptions() const {
 
 void WriteBufferManager::RegisterForUsageNotifications(void* client,
                                                        UsageNotificationCb cb) {
-  assert(allow_delay_);
+  assert(allow_delays_and_stalls_);
   assert(client != nullptr);
 
   std::unique_lock<std::mutex> lock(mu_);
   [[maybe_unused]] auto insertion_result =
-      usage_notification_cbs.insert({client, cb});
+      usage_notification_cbs_.insert({client, cb});
   assert(insertion_result.second);
 }
 
 void WriteBufferManager::DeregisterFromUsageNotifications(void* client) {
-  assert(allow_delay_);
+  assert(allow_delays_and_stalls_);
   assert(client != nullptr);
 
   std::unique_lock<std::mutex> lock(mu_);
-  auto cb_pos = usage_notification_cbs.find(client);
-  if (cb_pos != usage_notification_cbs.end()) {
-    usage_notification_cbs.erase(cb_pos);
+  auto cb_pos = usage_notification_cbs_.find(client);
+  if (cb_pos != usage_notification_cbs_.end()) {
+    usage_notification_cbs_.erase(cb_pos);
   } else {
-    assert(cb_pos != usage_notification_cbs.end());
+    assert(cb_pos != usage_notification_cbs_.end());
   }
 }
 
@@ -270,11 +269,9 @@ uint64_t CalcDelayFactor(size_t quota, size_t updated_memory_used,
 void WriteBufferManager::NotifyUsageIfApplicable(ssize_t memory_changed_size,
                                                  bool force_notification) {
   assert(enabled());
-  if (allow_delay_ == false) {
+  if (allow_delays_and_stalls_ == false) {
     return;
   }
-
-  std::unique_lock<std::mutex> lock(mu_);
 
   auto quota = buffer_size();
   auto new_usage_state = usage_state_;
@@ -305,7 +302,6 @@ void WriteBufferManager::NotifyUsageIfApplicable(ssize_t memory_changed_size,
   } else if (new_usage_state == UsageState::kDelay) {
     auto memory_used_before = new_memory_used - memory_changed_size;
     // Calculate & notify only if the change is more than one "step"
-    //
     if (force_notification || ((memory_used_before / change_steps) !=
                                (new_memory_used / change_steps))) {
       delay_factor =
@@ -316,7 +312,8 @@ void WriteBufferManager::NotifyUsageIfApplicable(ssize_t memory_changed_size,
   usage_state_ = new_usage_state;
 
   if (notification_needed) {
-    for (auto& cb_pair : usage_notification_cbs) {
+    std::unique_lock<std::mutex> lock(mu_);
+    for (auto& cb_pair : usage_notification_cbs_) {
       cb_pair.second(new_usage_state, delay_factor);
     }
   }

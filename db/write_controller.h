@@ -74,7 +74,7 @@ class WriteController {
     } else if (write_rate > max_delayed_write_rate()) {
       write_rate = max_delayed_write_rate();
     }
-    auto source_value = static_cast<uint>(source);
+    auto source_value = static_cast<unsigned int>(source);
     assert(source_value < delayed_write_rates_.size());
     delayed_write_rates_[source_value] = write_rate;
 
@@ -100,7 +100,7 @@ class WriteController {
 
   // Not thread-safe
   uint64_t TEST_delayed_write_rate(DelaySource source) const {
-    auto source_value = static_cast<uint>(source);
+    auto source_value = static_cast<unsigned int>(source);
     assert(source_value < delayed_write_rates_.size());
     return delayed_write_rates_[source_value];
   }

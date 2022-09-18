@@ -2421,6 +2421,9 @@ class DBImpl : public DB {
   std::pair<WriteBufferManager::UsageState, uint64_t> ParseCodedDelayFactor(
       uint64_t coded_delay_factor) const;
 
+  // A DB may be created and closed without being opened. This flag makes sure
+  // the DB deregisters only if previously registered.
+  bool is_registered_for_wbm_usage_notifications_ = false;
   std::unique_ptr<WriteControllerToken> write_controller_token_;
   std::atomic<uint64_t> wbm_spdb_curr_coded_delay_factor_ =
       kWbmNoneCodedDelayFactor;
