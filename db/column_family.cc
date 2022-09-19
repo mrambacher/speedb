@@ -522,11 +522,11 @@ ColumnFamilyData::ColumnFamilyData(
       internal_comparator_(cf_options.comparator),
       initial_cf_options_(SanitizeOptions(db_options, cf_options)),
       ioptions_(db_options, initial_cf_options_),
-      mutable_cf_options_(initial_cf_options_),      
+      mutable_cf_options_(initial_cf_options_),
       is_delete_range_supported_(
           cf_options.table_factory->IsDeleteRangeSupported()),
       write_buffer_manager_(write_buffer_manager),
-      spdb_memory_manager_client_(nullptr),      
+      spdb_memory_manager_client_(nullptr),
       mem_(nullptr),
       imm_(ioptions_.min_write_buffer_number_to_merge,
            ioptions_.max_write_buffer_number_to_maintain,
@@ -894,7 +894,6 @@ size_t ColumnFamilyData::GetSpdbDelayFactor(
                                           extra_files * extra_files /
                                           (max_extra_files * max_extra_files),
                                       delay_factor);
-      
     }
 
     // Compaction-related
@@ -924,7 +923,6 @@ ColumnFamilyData::GetWriteStallConditionAndCause(
     uint64_t num_compaction_needed_bytes,
     const MutableCFOptions& mutable_cf_options,
     const ImmutableCFOptions& immutable_cf_options) {
-
   if (num_unflushed_memtables >= mutable_cf_options.max_write_buffer_number) {
     return {WriteStallCondition::kStopped, WriteStallCause::kMemtableLimit};
   } else if (!mutable_cf_options.disable_auto_compactions &&
@@ -957,12 +955,10 @@ ColumnFamilyData::GetWriteStallConditionAndCause(
   return {WriteStallCondition::kNormal, WriteStallCause::kNone};
 }
 
-
-
-
 WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
       const MutableCFOptions& mutable_cf_options) {
-  // URQ - What is this good for? write_stall_condition is overwritten below anyway
+  // URQ - What is this good for? write_stall_condition is overwritten below
+  // anyway
   auto write_stall_condition = WriteStallCondition::kNormal;
   if (current_ != nullptr) {
     auto* vstorage = current_->storage_info();
@@ -1000,11 +996,11 @@ WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
             spdb_memory_manager_client_.get(), delay_factor);
         if (delay_factor) {
           ROCKS_LOG_INFO(ioptions_.logger, "[%s] new delayed write rate is %lu",
-                         name_.c_str(), write_buffer_manager_->GetDelayedRate());
+                         name_.c_str(),
+                         write_buffer_manager_->GetDelayedRate());
         }
       }
     }
-
 
     // ==============================================
     // URQ - WHAT IS THIS DUPLICATION FOR???????
@@ -1013,7 +1009,7 @@ WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
     //  use the rocksdb delay flow anyway because it set up compaction pressure
     //  etc which will increase
     // the number of parallel compaction
-    //  TBD remove this code 
+    //  TBD remove this code
 
     auto write_controller = column_family_set_->write_controller_;
     uint64_t compaction_needed_bytes =
@@ -1047,8 +1043,8 @@ WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
                          vstorage->estimated_compaction_needed_bytes());
         }
 
-        write_buffer_manager_->ClientNeedsDelay(spdb_memory_manager_client_.get(),
-                                                delay_factor);
+        write_buffer_manager_->ClientNeedsDelay(
+            spdb_memory_manager_client_.get(), delay_factor);
         if (delay_factor) {
           ROCKS_LOG_INFO(ioptions_.logger, "[%s] new delayed write rate is %lu",
                          name_.c_str(),
@@ -1057,7 +1053,7 @@ WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
       }
     }
 
-     //  use the rocksdb flow because it set up compression pressure etc...
+    //  use the rocksdb flow because it set up compression pressure etc...
     // TBD fixme and use one
 
     // ==============================================
@@ -1065,10 +1061,12 @@ WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
     // ==============================================
 
     // ==============================================================================================
-    // URQ - What will GetWriteStallConditionAndCause() return and why do we need all the code below?
+    // URQ - What will GetWriteStallConditionAndCause() return and why do we
+    // need all the code below?
 
-    // And, we are reporting to log, updating stats, etc., based on the write_stall_condition and then return
-    // WriteStallCondition::kNormal. That seems undesirable
+    // And, we are reporting to log, updating stats, etc., based on the
+    // write_stall_condition and then return WriteStallCondition::kNormal. That
+    // seems undesirable
     // ==============================================================================================
     auto write_stall_condition_and_cause = GetWriteStallConditionAndCause(
         imm()->NumNotFlushed(), vstorage->l0_delay_trigger_count(),

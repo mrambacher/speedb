@@ -1638,8 +1638,6 @@ class DBImpl : public DB {
       SnapshotChecker* snapshot_checker, LogBuffer* log_buffer,
       Env::Priority thread_pri);
 
-  
-
   // Flush the memtables of (multiple) column families to multiple files on
   // persistent storage.
   Status FlushMemTablesToOutputFiles(

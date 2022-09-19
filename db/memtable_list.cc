@@ -374,8 +374,8 @@ void MemTableList::PickMemtablesToFlush(uint64_t max_memtable_id,
     }
   }
   // URQ - When is this true and what does it mean?
-  // URQ - Could we have set the flush_in_progress_ above to true and set flush_requested_ 
-  // below to false?
+  // URQ - Could we have set the flush_in_progress_ above to true and set
+  // flush_requested_ below to false?
   if (!atomic_flush || num_flush_not_started_ == 0) {
     flush_requested_ = false;  // start-flush request is complete
   }

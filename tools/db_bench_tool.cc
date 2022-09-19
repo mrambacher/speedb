@@ -4293,12 +4293,12 @@ class Benchmark {
         options.max_background_flushes = memopt.n_parallel_flushes;
       }
       // URQ - Why and should it also be part of the options sanitization?
-      options.max_background_compactions = options.max_background_flushes*2;
+      options.max_background_compactions = options.max_background_flushes * 2;
       options.max_background_jobs =
           options.max_background_flushes + options.max_background_compactions;
 
       if (options.delayed_write_rate) {
-	memopt.delayed_write_rate = options.delayed_write_rate;
+        memopt.delayed_write_rate = options.delayed_write_rate;
       }
       options.db_write_buffer_size = memopt.dirty_data_size;
       options.write_buffer_manager.reset(new SpdbMemoryManager(memopt));

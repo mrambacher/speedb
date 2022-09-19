@@ -537,7 +537,7 @@ Status DBImpl::Recover(
       if (immutable_db_options_.write_buffer_manager.get() != nullptr) {
         cfd->SetMemoryClient(immutable_db_options_.write_buffer_manager.get(),
                              this);
-      }      
+      }
     }
   }
   // DB mutex is already held

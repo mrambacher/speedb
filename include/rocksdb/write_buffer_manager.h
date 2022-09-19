@@ -18,13 +18,12 @@
 #include <functional>
 #include <list>
 #include <mutex>
-#include <unordered_map>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "rocksdb/cache.h"
 #include "rocksdb/env.h"
-
 
 namespace ROCKSDB_NAMESPACE {
 class CacheReservationManager;
@@ -81,11 +80,11 @@ class WriteBufferManager {
   //  will wait for flush to complete and
   //
   //   memory usage to drop down.
-  explicit WriteBufferManager(size_t _buffer_size,
-                              std::shared_ptr<Cache> cache = {},
-                              bool allow_delays_and_stalls = true,
-                              bool initiate_flushes = false,
-                              const FlushInitiationOptions& flush_initiation_options = FlushInitiationOptions());
+  explicit WriteBufferManager(
+      size_t _buffer_size, std::shared_ptr<Cache> cache = {},
+      bool allow_delays_and_stalls = true, bool initiate_flushes = false,
+      const FlushInitiationOptions& flush_initiation_options =
+          FlushInitiationOptions());
 
   // No copying allowed
   WriteBufferManager(const WriteBufferManager&) = delete;
@@ -210,7 +209,7 @@ class WriteBufferManager {
   void DeregisterFromUsageNotifications(void* client);
 
  public:
-  using InitiateFlushRequestCb = std::function<bool (size_t min_size_to_flush, bool force_flush)>;
+  using InitiateFlushRequestCb = std::function<bool(size_t min_size_to_flush)>;
 
   void RegisterFlushInitiator(void* initiator, InitiateFlushRequestCb request);
   void DeregisterFlushInitiator(void* initiator);
@@ -256,7 +255,8 @@ class WriteBufferManager {
     bool disabled;
   };
 
-  static constexpr uint64_t kInvalidInitiatorIdx = std::numeric_limits<uint64_t>::max();
+  static constexpr uint64_t kInvalidInitiatorIdx =
+      std::numeric_limits<uint64_t>::max();
 
  private:
   void InitFlushInitiationVars(size_t quota);
@@ -264,16 +264,20 @@ class WriteBufferManager {
   bool InitiateAdditionalFlush();
   void WakeUpFlushesThread();
   void TerminateFlushesThread();
+  void RecalcFlushInitiationSize();
   void ReevaluateNeedForMoreFlushes();
   uint64_t FindInitiator(void* initiator) const;
 
-  bool IsInitiatorIdxValid(uint64_t initiator_idx) const {return (initiator_idx != kInvalidInitiatorIdx);}
+  bool IsInitiatorIdxValid(uint64_t initiator_idx) const {
+    return (initiator_idx != kInvalidInitiatorIdx);
+  }
 
  private:
   // Flush Initiation Data Members
 
   const bool initiate_flushes_ = false;
-  const FlushInitiationOptions flush_initiation_options_ = FlushInitiationOptions();
+  const FlushInitiationOptions flush_initiation_options_ =
+      FlushInitiationOptions();
 
   std::vector<InitiatorInfo> flush_initiators_;
   uint64_t next_candidate_initiator_idx_ = kInvalidInitiatorIdx;
@@ -283,7 +287,8 @@ class WriteBufferManager {
   size_t num_running_flushes_ = 0U;
   size_t flush_initiation_start_size_ = 0U;
   size_t additional_flush_step_size_ = 0U;
-  size_t additional_flush_initiation_size_ = 0U;
+  std::atomic<size_t> additional_flush_initiation_size_ = 0U;
+  size_t min_flush_size_ = 0U;
 
   std::mutex flushes_mu_;
   std::condition_variable flushes_wakeup_cv;
@@ -292,5 +297,4 @@ class WriteBufferManager {
   bool terminate_flushes_thread_ = false;
 };
 
-}
-
+}  // namespace ROCKSDB_NAMESPACE

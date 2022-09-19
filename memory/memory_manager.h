@@ -27,14 +27,15 @@ class SpdbMemoryManagerClient {
     return cf()->imm()->ApproximateMemoryUsage();
   }
 
-  // URQ - ApproximateUnflushedMemTablesMemoryUsage ignores memtables that are in history
+  // URQ - ApproximateUnflushedMemTablesMemoryUsage ignores memtables that are
+  // in history
   size_t GetUnFlushDataSize() const {
     return cf()->imm()->ApproximateUnflushedMemTablesMemoryUsage();
   }
 
   DBImpl *db() const { return db_; }
   ColumnFamilyData *cf() const { return cf_; }
-  
+
   void SetDelay(size_t factor) { delay_factor_ = factor; }
   size_t GetDelay() const { return delay_factor_; }
 

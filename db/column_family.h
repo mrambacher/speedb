@@ -477,15 +477,13 @@ class ColumnFamilyData {
       uint64_t num_compaction_needed_bytes,
       const MutableCFOptions& mutable_cf_options,
       const ImmutableCFOptions& immutable_cf_options);
-  
-  
+
   static std::pair<WriteStallCondition, WriteStallCause>
   GetWriteStallConditionAndCause(
       int num_unflushed_memtables, int num_l0_files,
       uint64_t num_compaction_needed_bytes,
       const MutableCFOptions& mutable_cf_options,
       const ImmutableCFOptions& immutable_cf_options);
-
 
   // Recalculate some small conditions, which are changed only during
   // compaction, adding new memtable and/or
@@ -530,10 +528,9 @@ class ColumnFamilyData {
   ThreadLocalPtr* TEST_GetLocalSV() { return local_sv_.get(); }
   WriteBufferManager* write_buffer_mgr() { return write_buffer_manager_; }
   // register this CF as a client
-  // URQ - But the CF already has a WBM in it. What is the relation between that WBM and the one passed
-  // URQ - as an argument?
+  // URQ - But the CF already has a WBM in it. What is the relation between that
+  // WBM and the one passed URQ - as an argument?
   void SetMemoryClient(WriteBufferManager* mem_manager, DBImpl* db);
-  
 
   static const uint32_t kDummyColumnFamilyDataId;
 
@@ -576,7 +573,7 @@ class ColumnFamilyData {
   std::unique_ptr<InternalStats> internal_stats_;
 
   WriteBufferManager* write_buffer_manager_;
-  
+
   MemTable* mem_;
   MemTableList imm_;
   SuperVersion* super_version_;
