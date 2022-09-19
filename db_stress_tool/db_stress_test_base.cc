@@ -34,15 +34,16 @@ std::shared_ptr<const FilterPolicy> CreateFilterPolicy() {
     ConfigOptions config_options;
     std::shared_ptr<const FilterPolicy> policy;
     config_options.ignore_unsupported_options = false;
-    std::string bits_str;
     if (FLAGS_bloom_bits > 0) {
-      bits_str = ":" + FormatDoubleParam(FLAGS_bloom_bits);
+      fprintf(stderr,
+              "--filter_uri and --bloom_bits are incompatible options\n");
+      exit(1);
     }
-    Status s = FilterPolicy::CreateFromString(
-        config_options, FLAGS_filter_uri + bits_str, &policy);
+    Status s = FilterPolicy::CreateFromString(config_options, FLAGS_filter_uri,
+                                              &policy);
     if (!s.ok() || !policy) {
-      fprintf(stderr, "Cannot create filter policy(%s%s): %s\n",
-              FLAGS_filter_uri.c_str(), bits_str.c_str(), s.ToString().c_str());
+      fprintf(stderr, "Cannot create filter policy(%s): %s\n",
+              FLAGS_filter_uri.c_str(), s.ToString().c_str());
       exit(1);
     }
     return policy;

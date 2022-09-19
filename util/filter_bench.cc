@@ -786,7 +786,7 @@ int main(int argc, char **argv) {
       ROCKSDB_NAMESPACE::BloomLikeFilterPolicy::GetAllFixedImpls();
   ROCKSDB_NAMESPACE::Slice impl(FLAGS_impl);
   if (ROCKSDB_NAMESPACE::ConsumeDecimalNumber(&impl, &id) &&
-      id < bloom_like_filters.size()) {
+      id < bloom_like_filters.size() && impl.empty()) {
     policy = ROCKSDB_NAMESPACE::BloomLikeFilterPolicy::Create(
         bloom_like_filters.at(id), FLAGS_bits_per_key);
     if (!policy) {
@@ -813,7 +813,7 @@ int main(int argc, char **argv) {
   }
   if (FLAGS_use_plain_table_bloom) {
     if (bloom_idx < 0 || bloom_idx > 1) {
-      fprintf(stderr, "-impl must currently be >= 0 and <= 1 for Plain table");
+      fprintf(stderr, "-impl must currently be 0 or 1 for Plain table");
       exit(-1);
     }
   } else if (bloom_idx == 1) {
