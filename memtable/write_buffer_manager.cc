@@ -52,9 +52,6 @@ WriteBufferManager::~WriteBufferManager() {
   assert(queue_.empty());
 #endif
 
-  terminate_flushes_thread = true;
-  WakeUpFlushesThread();
-  flushes_thread.join();
 }
 
 std::size_t WriteBufferManager::dummy_entries_in_cache_usage() const {
@@ -328,8 +325,64 @@ void WriteBufferManager::NotifyUsageIfApplicable(ssize_t memory_changed_size,
   }
 }
 
-void WriteBufferManager::InitiateFlushesThread() {
+// ================================================================================================
+void WriteBufferManager::RegisterFlushInitiator(void* initiator, InitiateFlushRequestCb request) {
+  std::unique_lock<std::mutex> lock(flushes_mu_);
+  // TODO - Verify that the initiator is not already in the container
+  flush_initiators_.push_back
 
+}
+
+void WriteBufferManager::DeregisterFlushInitiator(void* initiator) {
+
+}
+
+void WriteBufferManager::InitFlushInitiationVars() {
+  assert(initiate_flushes_);
+
+  auto quota = buffer_size();
+  additional_flush_step_size_ = quota / flush_initiation_options_.max_num_parallel_flushes;
+  flush_initiation_start_size_ = additional_flush_step_size_;
+  RecalcAdditionalFlushInitiationSize();
+
+  if (flushes_thread_.joinable() == false) {
+    flushes_thread_ = std::thread(&WriteBufferManager::InitiateFlushesThread, this);
+  }
+}
+
+void WriteBufferManager::RecalcAdditionalFlushInitiationSize() {
+  additional_flush_initiation_size_ = flush_initiation_start_size_ + additional_flush_step_size_ * num_running_flushes_;
+}
+
+void WriteBufferManager::InitiateFlushesThread() {
+  while (true) {    
+    // // {
+    // //   // Wait in case there are currently no initiators
+    // //   std::unique_lock<std::mutex> lock(flushes_mu_);
+    // //   flushes_wakeup_cv.wait(lock, [this](){return this->flush_initiators_.empty();});
+    // // }
+
+    // Wait until  
+    std::unique_lock<std::mutex> lock(flushes_mu_);
+    auto WakeupPred = [this]{
+      return ((this->terminate_flushes_thread_ == false) && 
+              (this->num_running_flushes_ < this->num_flushes_to_run_) && 
+              (this->flush_initiators_.empty() == false));
+    };
+    flushes_wakeup_cv.wait(lock, WakeupPred);
+
+    if ((terminate_flushes_thread_ || flush_initiators_.empty()) {
+      break;
+    }
+
+    while (num_running_flushes_ < num_flushes_to_run_) {
+        if (!client->db()->InitiateMemoryManagerFlushRequest(client->cf())) {
+                std::unique_lock<std::mutex> lck(mutex_);
+                if (n_scheduled_flushes_ > 0)
+                  n_scheduled_flushes_--;
+        }
+      }
+    }
 }
 
 void WriteBufferManager::WakeUpFlushesThread() {
@@ -337,44 +390,41 @@ void WriteBufferManager::WakeUpFlushesThread() {
   flushes_wakeup_cv.notify_one();
 }
 
+void WriteBufferManager::TerminateFlushesThread() {
+  terminate_flushes_thread_ = true;
+  WakeUpFlushesThread();
+  if (flushes_thread_.joinable()) {
+    flushes_thread_.join();
+  }
+}
+
 void WriteBufferManager::FlushStarted(bool wbm_initiated) {
   if (wbm_initiated) {
     return;
   }
 
-  std::unique_lock<std::mutex> lock(flushes_mu_);
-  ++num_running_flushes_;
+  {
+    std::unique_lock<std::mutex> lock(flushes_mu_);
+    ++num_running_flushes_;
+  }
+  flushes_wakeup_cv.notify_one();
 }
 
 void WriteBufferManager::FlushEnded(bool wbm_initiated) {
-  std::unique_lock<std::mutex> lock(flushes_mu_);
-  assert(num_running_flushes_ > 0U);
-  --num_running_flushes_;
+  {
+    std::unique_lock<std::mutex> lock(flushes_mu_);
+    assert(num_running_flushes_ > 0U);
+    --num_running_flushes_;
+  }
+  flushes_wakeup_cv.notify_one();
 }
 
 void WriteBufferManager::ReevaluateNeedForMoreFlushes() {
-   const int start_delay_percent = 80;
-  size_t start_delay_size = buffer_size() * start_delay_percent / 100;  
-  size_t start_flush_step = start_delay_size  / n_parallel_flushes_;
-  size_t start_flush_size = start_flush_step; 
-
-  size_t delay_factor = 0;
-  next_recalc_size_ =
-      start_flush_size +
-    start_flush_step * (n_running_flushes_ + n_scheduled_flushes_);
     // URQ - I SUGGEST USING HERE THE AMOUNT OF MEMORY STILL NOT MARKED FOR FLUSH (MUTABLE + IMMUTABLE)
-  if (memory_usage() >= next_recalc_size_) {
+  if (memory_usage() >= additional_flush_initiation_size_) {
     // need to schedule more 
-    if (InitiateFlushRequest()) {
-      next_recalc_size_ =
-          start_flush_size +
-          start_flush_step * (n_running_flushes_ + n_scheduled_flushes_);
-    } else {      
-      // wait 1% extra before intiating one moer
-      // URQ - Why?
-      // To lower the number of mutexes locks
-      // raise the threshold a bit before retrying to initiate the flush again
-      next_recalc_size_ = memory_usage() + buffer_size() / 100;
+    if (num_flushes_to_run < flush_initiation_options_.max_num_parallel_flushes) {
+      ++num_flushes_to_run;
     }
   } 
 }

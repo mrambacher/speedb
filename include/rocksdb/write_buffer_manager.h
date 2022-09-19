@@ -20,6 +20,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <thread>
+#include <vector>
 
 #include "rocksdb/cache.h"
 #include "rocksdb/env.h"
@@ -205,10 +206,10 @@ class WriteBufferManager {
   void DeregisterFromUsageNotifications(void* client);
 
  public:
-  using InitiateFlushRequest = std::function<bool (size_t min_size_to_flush, bool force_flush)>;
+  using InitiateFlushRequestCb = std::function<bool (size_t min_size_to_flush, bool force_flush)>;
 
-  void RegisterFlushInitiator(void* initiator, InitiateFlushRequest request);
-  void DeRegisterFlushInitiator(void* initiator);
+  void RegisterFlushInitiator(void* initiator, InitiateFlushRequestCb request);
+  void DeregisterFlushInitiator(void* initiator);
 
   void FlushStarted(bool wbm_initiated);
   void FlushEnded(bool wbm_initiated);
@@ -243,23 +244,41 @@ class WriteBufferManager {
   UsageState usage_state_ = UsageState::kNone;
 
  private:
+  struct InitiatorInfo {
+    void* initiator;
+    InitiateFlushRequestCb cb;
+  };
+
+ private:
+  void InitFlushInitiationVars();
   void InitiateFlushesThread();
+  bool InitiateAdditionalFlush();
   void WakeUpFlushesThread();
+  void TerminateFlushesThread();
+  void RecalcAdditionalFlushInitiationSize();
   void ReevaluateNeedForMoreFlushes();
 
  private:
-  bool initiate_flushes_ = false;
-  FlushInitiationOptions flush_initiation_options_ = FlushInitiationOptions();
+  // Flush Initiation Data Members
 
-  std::unordered_map<void*, InitiateFlushRequest> flush_initiators;
+  const bool initiate_flushes_ = false;
+  const FlushInitiationOptions flush_initiation_options_ = FlushInitiationOptions();
+
+  std::vector<InitiatorInfo> flush_initiators_;
+  uint64_t next_candidate_initiator_idx = std::numeric_limits<uint64_t>::max();
+
+  // Consider if this needs to be atomic
+  size_t num_flushes_to_run_ = 0U;
   std::atomic<size_t> num_running_flushes_ = 0U;
-  size_t next_flush_initiation_recalc_threshold = 0U;
+  size_t flush_initiation_start_size_ = 0U;
+  size_t additional_flush_step_size_ = 0U;
+  size_t additional_flush_initiation_size_ = 0U;
 
   std::mutex flushes_mu_;
   std::condition_variable flushes_wakeup_cv;
 
-  std::thread flushes_thread;
-  bool terminate_flushes_thread = false;
+  std::thread flushes_thread_;
+  bool terminate_flushes_thread_ = false;
 };
 
 }
