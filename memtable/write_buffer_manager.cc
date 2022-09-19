@@ -40,10 +40,14 @@ WriteBufferManager::WriteBufferManager(size_t _buffer_size,
     cache_res_mgr_ = std::make_shared<
         CacheReservationManagerImpl<CacheEntryRole::kWriteBuffer>>(
         cache, true /* delayed_decrease */);
-  }
+  }  
 #else
   (void)cache;
 #endif  // ROCKSDB_LITE
+
+  if (initiate_flushes_) {
+    InitFlushInitiationVars(buffer_size());
+  }
 }
 
 WriteBufferManager::~WriteBufferManager() {
@@ -73,6 +77,9 @@ void WriteBufferManager::ReserveMem(size_t mem) {
   if (is_enabled) {
     memory_active_.fetch_add(mem, std::memory_order_relaxed);
     NotifyUsageIfApplicable(mem, false /* force notification */);
+
+    std::unique_lock<std::mutex> lock(flushes_mu_);
+    ReevaluateNeedForMoreFlushes();
   }
 }
 
@@ -119,6 +126,9 @@ void WriteBufferManager::FreeMem(size_t mem) {
 
   if (is_enabled) {
     NotifyUsageIfApplicable(-mem, false /* force notification */);
+
+    std::unique_lock<std::mutex> lock(flushes_mu_);
+    ReevaluateNeedForMoreFlushes();
   }
 }
 
@@ -328,71 +338,106 @@ void WriteBufferManager::NotifyUsageIfApplicable(ssize_t memory_changed_size,
 // ================================================================================================
 void WriteBufferManager::RegisterFlushInitiator(void* initiator, InitiateFlushRequestCb request) {
   std::unique_lock<std::mutex> lock(flushes_mu_);
-  // TODO - Verify that the initiator is not already in the container
-  flush_initiators_.push_back
 
+  assert(IsInitiatorIdxValid(FindInitiator(initiator)) == false);
+  flush_initiators_.push_back({initiator, request});
+
+  flushes_wakeup_cv.notify_one();
 }
 
 void WriteBufferManager::DeregisterFlushInitiator(void* initiator) {
+  std::unique_lock<std::mutex> lock(flushes_mu_);
 
+  auto initiator_idx = FindInitiator(initiator);
+  assert(IsInitiatorIdxValid(initiator_idx));
+
+  flush_initiators_.erase(flush_initiators_.begin() + initiator_idx);
+  if (initiator_idx == next_candidate_initiator_idx_) {
+    if (flush_initiators_.empty() == false) {
+      next_candidate_initiator_idx_ = (next_candidate_initiator_idx_ + 1) % flush_initiators_.size();
+    } else {
+      next_candidate_initiator_idx_ = std::numeric_limits<uint64_t>::max();
+    }
+  }
+
+  flushes_wakeup_cv.notify_one();
 }
 
-void WriteBufferManager::InitFlushInitiationVars() {
+void WriteBufferManager::InitFlushInitiationVars(size_t quota) {
   assert(initiate_flushes_);
 
-  auto quota = buffer_size();
-  additional_flush_step_size_ = quota / flush_initiation_options_.max_num_parallel_flushes;
-  flush_initiation_start_size_ = additional_flush_step_size_;
-  RecalcAdditionalFlushInitiationSize();
+  {
+    std::unique_lock<std::mutex> lock(flushes_mu_);
+    additional_flush_step_size_ = quota / flush_initiation_options_.max_num_parallel_flushes;
+    flush_initiation_start_size_ = additional_flush_step_size_;
+  }
 
   if (flushes_thread_.joinable() == false) {
     flushes_thread_ = std::thread(&WriteBufferManager::InitiateFlushesThread, this);
   }
 }
 
-void WriteBufferManager::RecalcAdditionalFlushInitiationSize() {
-  additional_flush_initiation_size_ = flush_initiation_start_size_ + additional_flush_step_size_ * num_running_flushes_;
-}
-
 void WriteBufferManager::InitiateFlushesThread() {
   while (true) {    
-    // // {
-    // //   // Wait in case there are currently no initiators
-    // //   std::unique_lock<std::mutex> lock(flushes_mu_);
-    // //   flushes_wakeup_cv.wait(lock, [this](){return this->flush_initiators_.empty();});
-    // // }
-
-    // Wait until  
     std::unique_lock<std::mutex> lock(flushes_mu_);
-    auto WakeupPred = [this]{
+    // Wait until 
+    auto WakeupPred = [this]() {
       return ((this->terminate_flushes_thread_ == false) && 
-              (this->num_running_flushes_ < this->num_flushes_to_run_) && 
-              (this->flush_initiators_.empty() == false));
+              (this->num_flushes_to_initiate_ > 0U));
     };
     flushes_wakeup_cv.wait(lock, WakeupPred);
 
-    if ((terminate_flushes_thread_ || flush_initiators_.empty()) {
+    if (terminate_flushes_thread_) {
       break;
     }
 
-    while (num_running_flushes_ < num_flushes_to_run_) {
-        if (!client->db()->InitiateMemoryManagerFlushRequest(client->cf())) {
-                std::unique_lock<std::mutex> lck(mutex_);
-                if (n_scheduled_flushes_ > 0)
-                  n_scheduled_flushes_--;
+    if (num_flushes_to_initiate_ > 0U) {
+      for (auto& initiator: flush_initiators_) {
+        if (initiator.disabled == false) {
+
         }
       }
+      // WBM-Flush Request Result May Be:
+      // OK                 => Flush Initiated
+      // MIN-SIZE           => No CF has MIN Size
+      // NOTHING-TO-FLUSH   => NO CF To Flush (e.g., all cf-s are already being flushed)
+
+      // std::vector initiators_to_flush_ignoring_size
+      //
+      // FOR initiator in initiators:
+      //  If initiator is enabled:
+      //    result = initiator->WBM-Flush(Min-Size);
+      //    If result == OK:
+      //      ++num_running_flushes_
+      //      --num_flushes_to_initiate_
+      //      
+      //      If (num_flushes_to_initiate_ == 0):
+      //        Break
+      //      End If
+      //    Else If result == MIN-SIZE
+      //      initiators_to_flush_ignoring_size.push_back(initiator)
+      //    End If
+      //
+      // FOR initiator in initiators_to_flush_ignoring_size:
+      //    result = initiator->WBM-Flush(Ignore Size);
+      //    If result == OK:
+      //      ++num_running_flushes_
+      //      --num_flushes_to_initiate_
+      //      
+      //      If (num_flushes_to_initiate_ == 0):
+      //        Break
+      //      End If
+      //    End If
     }
 }
 
-void WriteBufferManager::WakeUpFlushesThread() {
-  std::unique_lock<std::mutex> lock(flushes_mu_);
-  flushes_wakeup_cv.notify_one();
-}
-
 void WriteBufferManager::TerminateFlushesThread() {
-  terminate_flushes_thread_ = true;
-  WakeUpFlushesThread();
+  {
+    std::unique_lock<std::mutex> lock(flushes_mu_);
+    terminate_flushes_thread_ = true;
+  }
+  flushes_wakeup_cv.notify_one();
+
   if (flushes_thread_.joinable()) {
     flushes_thread_.join();
   }
@@ -403,30 +448,70 @@ void WriteBufferManager::FlushStarted(bool wbm_initiated) {
     return;
   }
 
-  {
-    std::unique_lock<std::mutex> lock(flushes_mu_);
-    ++num_running_flushes_;
-  }
-  flushes_wakeup_cv.notify_one();
+  std::unique_lock<std::mutex> lock(flushes_mu_);
+
+  ++num_running_flushes_;
+  ReevaluateNeedForMoreFlushes();
 }
 
-void WriteBufferManager::FlushEnded(bool wbm_initiated) {
-  {
-    std::unique_lock<std::mutex> lock(flushes_mu_);
-    assert(num_running_flushes_ > 0U);
-    --num_running_flushes_;
+void WriteBufferManager::FlushEnded(bool /* wbm_initiated */) {
+  std::unique_lock<std::mutex> lock(flushes_mu_);
+
+  assert(num_running_flushes_ > 0U);
+  --num_running_flushes_;
+
+  ReevaluateNeedForMoreFlushes();
+}
+
+void WriteBufferManager::FlushEnabled(void* initiator) {
+  std::unique_lock<std::mutex> lock(flushes_mu_);
+
+  auto initiator_idx = FindInitiator(initiator);
+  if (IsInitiatorIdxValid(initiator_idx)) {
+    assert(flush_initiators_[initiator_idx].disabled);
+    flush_initiators_[initiator_idx].disabled = false;
+    flushes_wakeup_cv.notify_one();
   }
-  flushes_wakeup_cv.notify_one();
+}
+
+void WriteBufferManager::FlushDisabled(void* initiator) {
+  std::unique_lock<std::mutex> lock(flushes_mu_);
+  
+  auto initiator_idx = FindInitiator(initiator);
+  if (IsInitiatorIdxValid(initiator_idx)) {
+    assert(flush_initiators_[initiator_idx].disabled == false);
+    flush_initiators_[initiator_idx].disabled = true;
+    flushes_wakeup_cv.notify_one();
+  }
 }
 
 void WriteBufferManager::ReevaluateNeedForMoreFlushes() {
-    // URQ - I SUGGEST USING HERE THE AMOUNT OF MEMORY STILL NOT MARKED FOR FLUSH (MUTABLE + IMMUTABLE)
+  assert(enabled());
+
+  additional_flush_initiation_size_ = flush_initiation_start_size_ + additional_flush_step_size_ * num_running_flushes_;
+
+  // URQ - I SUGGEST USING HERE THE AMOUNT OF MEMORY STILL NOT MARKED FOR FLUSH (MUTABLE + IMMUTABLE)
   if (memory_usage() >= additional_flush_initiation_size_) {
     // need to schedule more 
-    if (num_flushes_to_run < flush_initiation_options_.max_num_parallel_flushes) {
-      ++num_flushes_to_run;
+    if (num_flushes_to_initiate_ < flush_initiation_options_.max_num_parallel_flushes) {
+      ++num_flushes_to_initiate_;
     }
+    flushes_wakeup_cv.notify_one();
   } 
+}
+
+uint64_t WriteBufferManager::FindInitiator(void* initiator) const {
+  // Assumes lock is held on the flushes_mu_
+  
+  auto initiator_idx = kInvalidInitiatorIdx;
+  for (auto i = 0U; i < flush_initiators_.size(); ++i) {
+    if (flush_initiators_[i].initiator == initiator) {
+      initiator_idx = i;
+      break;
+    }
+  }
+
+  return initiator_idx;
 }
 
 }  // namespace ROCKSDB_NAMESPACE

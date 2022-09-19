@@ -127,6 +127,10 @@ class WriteBufferManager {
     MaybeEndWriteStall();
     if (enabled()) {
       NotifyUsageIfApplicable(0, true /* force notification */);
+
+      if (initiate_flushes_) {
+        InitFlushInitiationVars(new_size);
+      }
     }
   }
 
@@ -213,7 +217,9 @@ class WriteBufferManager {
 
   void FlushStarted(bool wbm_initiated);
   void FlushEnded(bool wbm_initiated);
-  
+  void FlushEnabled(void* initiator);
+  void FlushDisabled(void* initiator);
+
  private:
   std::atomic<size_t> buffer_size_;
   std::atomic<size_t> mutable_limit_;
@@ -247,16 +253,21 @@ class WriteBufferManager {
   struct InitiatorInfo {
     void* initiator;
     InitiateFlushRequestCb cb;
+    bool disabled;
   };
 
+  static constexpr uint64_t kInvalidInitiatorIdx = std::numeric_limits<uint64_t>::max();
+
  private:
-  void InitFlushInitiationVars();
+  void InitFlushInitiationVars(size_t quota);
   void InitiateFlushesThread();
   bool InitiateAdditionalFlush();
   void WakeUpFlushesThread();
   void TerminateFlushesThread();
-  void RecalcAdditionalFlushInitiationSize();
   void ReevaluateNeedForMoreFlushes();
+  uint64_t FindInitiator(void* initiator) const;
+
+  bool IsInitiatorIdxValid(uint64_t initiator_idx) const {return (initiator_idx != kInvalidInitiatorIdx);}
 
  private:
   // Flush Initiation Data Members
@@ -265,11 +276,11 @@ class WriteBufferManager {
   const FlushInitiationOptions flush_initiation_options_ = FlushInitiationOptions();
 
   std::vector<InitiatorInfo> flush_initiators_;
-  uint64_t next_candidate_initiator_idx = std::numeric_limits<uint64_t>::max();
+  uint64_t next_candidate_initiator_idx_ = kInvalidInitiatorIdx;
 
   // Consider if this needs to be atomic
-  size_t num_flushes_to_run_ = 0U;
-  std::atomic<size_t> num_running_flushes_ = 0U;
+  size_t num_flushes_to_initiate_ = 0U;
+  size_t num_running_flushes_ = 0U;
   size_t flush_initiation_start_size_ = 0U;
   size_t additional_flush_step_size_ = 0U;
   size_t additional_flush_initiation_size_ = 0U;
