@@ -106,6 +106,12 @@ if test -z "$AR"; then
     fi
 fi
 
+if command -v sccache > /dev/null; then
+    CCACHE=sccache
+elif command -v ccache > /dev/null; then
+    CCACHE=ccache
+fi
+
 # Detect OS
 if test -z "$TARGET_OS"; then
     TARGET_OS=`uname -s`
@@ -839,6 +845,7 @@ ROCKSDB_MAJOR=`build_tools/version.sh major`
 ROCKSDB_MINOR=`build_tools/version.sh minor`
 ROCKSDB_PATCH=`build_tools/version.sh patch`
 
+echo "CCACHE=$CCACHE" >> "$OUTPUT"
 echo "CC=$CC" >> "$OUTPUT"
 echo "CXX=$CXX" >> "$OUTPUT"
 echo "AR=$AR" >> "$OUTPUT"
