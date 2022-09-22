@@ -358,6 +358,7 @@ Status ReadRecordFromWriteBatch(Slice* input, char* tag,
         return Status::Corruption("bad WriteBatch Put");
       }
       FALLTHROUGH_INTENDED;
+    case kTypeIgnore:
     case kTypeValue:
       if (!GetLengthPrefixedSlice(input, key) ||
           !GetLengthPrefixedSlice(input, value)) {
@@ -666,6 +667,9 @@ Status WriteBatchInternal::Iterate(const WriteBatch* wb,
         empty_batch = true;
         break;
       case kTypeIgnore:
+        // note this is part of rollback.
+        // the publish seq wasnt set yet so this entry on any read/seek will be
+        // ignore any way
         assert(wb->content_flags_.load(std::memory_order_relaxed) &
                (ContentFlags::DEFERRED | ContentFlags::HAS_IGNORE));
         s = handler->IgnoreCF(key);
