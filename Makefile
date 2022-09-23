@@ -214,25 +214,28 @@ AM_SHARE = $(AM_V_CCLD) $(CXX) $(PLATFORM_SHARED_LDFLAGS)$@ -L. $(patsubst lib%.
 # (restarts are caused by Makefiles being updated during the parsing of the Makefile,
 #  which is exactly what happens when make_config.mk is regenerated and included).
 ifeq ($(MAKE_RESTARTS),)
-# Don't regenerate when doing a simple `make clean` invocation and make_config.mk
-# already exists, becuase we will be using the variables from the existing one and
-# deleting it immediately afterwards.
-ifneq ($(strip $(and $(wildcard make_config.mk),$(filter-out clean,$(MAKECMDGOALS) make_config.mk))),make_config.mk)
+# If make_config.mk exists and the make invocation was for a target that doesn't
+# need to regenerate it (because it doesn't build anything), such as `make clean`,
+# don't perform the regeneration since these targets either don't need make_config.mk
+# at all or only need to use the existing configuration in make_config.mk to do
+# their job.
+NO_CONFIG_REGENERATION_TARGETS := clean% jclean uninstall dump-log watch-log tags% format check-format check-buck-targets check-sources package checkout_folly list_all_tests
+ifneq ($(strip $(and $(wildcard make_config.mk),$(filter-out $(NO_CONFIG_REGENERATION_TARGETS),$(MAKECMDGOALS) make_config.mk))),make_config.mk)
 
 # Detect what platform we're building on.
 # Export some common variables that might have been passed as Make variables
 # instead of environment variables.
 $(info * GEN     make_config.mk)
-dummy := $(shell (export ROCKSDB_ROOT="$(CURDIR)" && \
-                  export CXXFLAGS="$(EXTRA_CXXFLAGS)" && \
-                  export LDFLAGS="$(EXTRA_LDFLAGS)" && \
-                  export COMPILE_WITH_ASAN="$(COMPILE_WITH_ASAN)" && \
-                  export COMPILE_WITH_TSAN="$(COMPILE_WITH_TSAN)" && \
-                  export COMPILE_WITH_UBSAN="$(COMPILE_WITH_UBSAN)" && \
-                  export PORTABLE="$(PORTABLE)" && \
-                  export ROCKSDB_NO_FBCODE="$(ROCKSDB_NO_FBCODE)" && \
-                  export USE_CLANG="$(USE_CLANG)" && \
-                  export LIB_MODE="$(LIB_MODE)" && \
+dummy := $(shell (export ROCKSDB_ROOT="$(CURDIR)"; \
+                  export CXXFLAGS="$(EXTRA_CXXFLAGS)"; \
+                  export LDFLAGS="$(EXTRA_LDFLAGS)"; \
+                  export COMPILE_WITH_ASAN="$(COMPILE_WITH_ASAN)"; \
+                  export COMPILE_WITH_TSAN="$(COMPILE_WITH_TSAN)"; \
+                  export COMPILE_WITH_UBSAN="$(COMPILE_WITH_UBSAN)"; \
+                  export PORTABLE="$(PORTABLE)"; \
+                  export ROCKSDB_NO_FBCODE="$(ROCKSDB_NO_FBCODE)"; \
+                  export USE_CLANG="$(USE_CLANG)"; \
+                  export LIB_MODE="$(LIB_MODE)"; \
                   "$(CURDIR)/build_tools/build_detect_platform" "$(CURDIR)/make_config.mk"))
 
 endif
