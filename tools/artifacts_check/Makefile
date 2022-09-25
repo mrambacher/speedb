@@ -22,7 +22,7 @@ check_static: check_static.cc
 	$(CXX) $(CXXFLAGS) $@.cc -o$@ ../../librocksdb.a -I../../include -O2 -std=c++17 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
 
 check_shared: check_shared.cc
-	$(CXX) $(CXXFLAGS) $@.cc -shared -o$@ ../../librocksdb.dylib -I../../include -O2 -std=c++17 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
+	$(CXX) $(CXXFLAGS) $@.cc -shared -o$@ ../../librocksdb.so -I../../include -O2 -std=c++17 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
 
 clean:
 	rm -rf ./check_static ./check_shared
