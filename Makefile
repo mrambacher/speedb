@@ -962,7 +962,7 @@ else
 endif
 
 .PHONY: check_0 check_1
-check_0: all $(parallel_tests)
+check_0: $(TESTS) $(parallel_tests)
 	$(AM_V_GEN)printf '%s\n' ''						\
 	  'Running tests in $(TEST_TMPDIR)'		\
 	  'To monitor subtest <duration,pass/fail,name>,'		\
@@ -1027,7 +1027,7 @@ dump-log:
 
 # If J != 1 and GNU parallel is installed, run the tests in parallel,
 # via the check_0 rule above.  Otherwise, run them sequentially via check_1.
-check: $(if $(shell [ "$(J)" != "1" ] && [ "$(PARALLEL_OK)" = "1" ] && echo 1),check_0,check_1)
+check: all $(if $(shell [ "$(J)" != "1" ] && [ "$(PARALLEL_OK)" = "1" ] && echo 1),check_0,check_1)
 ifneq ($(PLATFORM), OS_AIX)
 	$(PYTHON) tools/check_all_python.py
 ifeq ($(filter -DROCKSDB_LITE,$(OPT)),)
