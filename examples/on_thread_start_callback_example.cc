@@ -12,21 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <functional>
 #include <iostream>
+#include <memory>
 
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 
-using ROCKSDB_NAMESPACE::DB;
-using ROCKSDB_NAMESPACE::Options;
-using ROCKSDB_NAMESPACE::ReadOptions;
-using ROCKSDB_NAMESPACE::Status;
-using ROCKSDB_NAMESPACE::WriteOptions;
+using namespace ROCKSDB_NAMESPACE;
 
 #if defined(OS_WIN)
-std::string kDBPath = "C:\\Windows\\TEMP\\speedb_is_awesome_example";
+std::string kDBPath = "C:\\Windows\\TEMP\\speedb_thr_affinity";
 #else
-std::string kDBPath = "/tmp/speedb_is_awesome_example";
+std::string kDBPath = "/tmp/speedb_thr_affinity";
 #endif
 
 int main() {
@@ -35,6 +33,22 @@ int main() {
   Options options;
   // create the DB if it's not already present
   options.create_if_missing = true;
+  auto f = [](std::thread::native_handle_type thr) {
+// callback to pin all Speedb threads to the first core.
+#if defined(OS_WIN)
+#include "winbase.h"
+    SetThreadAffinityMask(thr, 0);
+#else
+#include "pthread.h"
+    std::cout << "thread spawned, thread_id: " << thr << std::endl;
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    pthread_setaffinity_np(thr, sizeof(cpu_set_t), &cpuset);
+#endif
+  };
+  options.on_thread_start_callback =
+      std::make_shared<std::function<void(std::thread::native_handle_type)>>(f);
   Status s = DB::Open(options, kDBPath, &db);
   assert(s.ok());
 
@@ -54,6 +68,5 @@ int main() {
   // close DB
   s = db->Close();
   assert(s.ok());
-  delete db;
   return 0;
 }

@@ -27,7 +27,11 @@
 #include "utilities/fault_injection_env.h"
 #include "utilities/merge_operators.h"
 #include "utilities/merge_operators/string_append/stringappend.h"
-
+#if defined(OS_WIN)
+#include "winbase.h"
+#elif (OS_LINUX)
+#include <pthread.h>
+#endif
 namespace ROCKSDB_NAMESPACE {
 
 static bool enable_io_uring = true;
@@ -2159,6 +2163,40 @@ TEST_P(DBMultiGetTestWithParam, MultiGetBatchedValueSizeMultiLevelMerge) {
   for (unsigned int j = 26; j < 40; j++) {
     ASSERT_TRUE(statuses[j].IsAborted());
   }
+}
+
+TEST_F(DBBasicTest, DBSetThreadAffinity) {
+  Options options = GetDefaultOptions();
+  std::string dbname = test::PerThreadDBPath("db_close_test");
+  ASSERT_OK(DestroyDB(dbname, options));
+
+  DB* db = nullptr;
+  TestEnv* env = new TestEnv(env_);
+  std::unique_ptr<TestEnv> local_env_guard(env);
+  options.create_if_missing = true;
+  options.env = env;
+  auto f = [](std::thread::native_handle_type thr) {
+#if defined(OS_WIN)
+    SetThreadAffinityMask(thr, 0);
+#elif (OS_LINUX)
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    pthread_setaffinity_np(thr, sizeof(cpu_set_t), &cpuset);
+#endif
+  };
+  options.on_thread_start_callback =
+      std::make_shared<std::function<void(std::thread::native_handle_type)>>(f);
+  Status s = DB::Open(options, dbname, &db);
+  ASSERT_OK(s);
+  ASSERT_TRUE(db != nullptr);
+
+  s = db->Close();
+  ASSERT_EQ(env->GetCloseCount(), 1);
+  ASSERT_TRUE(s.IsIOError());
+
+  delete db;
+  ASSERT_EQ(env->GetCloseCount(), 1);
 }
 
 INSTANTIATE_TEST_CASE_P(DBMultiGetTestWithParam, DBMultiGetTestWithParam,

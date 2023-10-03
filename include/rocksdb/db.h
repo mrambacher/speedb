@@ -22,6 +22,7 @@
 #include "rocksdb/listener.h"
 #include "rocksdb/metadata.h"
 #include "rocksdb/options.h"
+#include "rocksdb/port_defs.h"
 #include "rocksdb/snapshot.h"
 #include "rocksdb/sst_file_writer.h"
 #include "rocksdb/thread_status.h"
@@ -986,6 +987,14 @@ class DB {
     //      stale values more frequently to reduce overhead and latency.
     static const std::string kFastBlockCacheEntryStats;
 
+    //  "rocksdb.block-cache-cf-stats" - returns a multi-line string
+    //      with statistics on block cache usage for a specific column-family.
+    static const std::string kBlockCacheCfStats;
+
+    //  "rocksdb.fast-block-cache-cf-stats" - same as above, but returns
+    //      stale values more frequently to reduce overhead and latency.
+    static const std::string kFastBlockCacheCfStats;
+
     //  "rocksdb.num-immutable-mem-table" - returns number of immutable
     //      memtables that have not yet been flushed.
     static const std::string kNumImmutableMemTable;
@@ -1341,6 +1350,22 @@ class DB {
   // the files. In this case, client could set options.change_level to true, to
   // move the files back to the minimum level capable of holding the data set
   // or a given level (specified by non-negative options.target_level).
+  //
+  // Non-Blocking Compactions:
+  // A non-blocking compaction is initiated by setting the async_completion_cb
+  // option in the CompactRangeOptions options parameter. By default (unless
+  // explicitly set by the caller), the CompactRange() will be blocking. When
+  // async_completion_cb is set, the CompactRange() call will return control to
+  // the caller immediately. The manual compaction iteslf will be performed in
+  // an internally created thread. The manual compaction will ALWAYS call the
+  // specified callback upon completion and provide the completion status.
+  //
+  // NOTES:
+  // 1. The callback object must be alive until the callback has been called.
+  // 2. The callback MAY be called in the context of the caller's thread when
+  // there are conditions
+  //    that prevent manual compaction from running. Otherwise, the callback
+  //    will be called in the context of the internally created thread.
   virtual Status CompactRange(const CompactRangeOptions& options,
                               ColumnFamilyHandle* column_family,
                               const Slice* begin, const Slice* end) = 0;
