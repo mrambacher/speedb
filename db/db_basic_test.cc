@@ -2183,6 +2183,8 @@ TEST_F(DBBasicTest, DBSetThreadAffinity) {
     CPU_ZERO(&cpuset);
     CPU_SET(0, &cpuset);
     pthread_setaffinity_np(thr, sizeof(cpu_set_t), &cpuset);
+#else
+    (void)thr;
 #endif
   };
   options.on_thread_start_callback =

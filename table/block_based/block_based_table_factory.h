@@ -84,6 +84,7 @@ class BlockBasedTableFactory : public TableFactory {
                      const OptionTypeInfo& opt_info,
                      const std::string& opt_name, const std::string& opt_value,
                      void* opt_ptr) override;
+  void InitializeOptions();
 
  private:
   BlockBasedTableOptions table_options_;
